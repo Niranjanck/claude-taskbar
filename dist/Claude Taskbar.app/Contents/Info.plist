@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Claude Taskbar</string>
+  <key>CFBundleDisplayName</key><string>Claude Taskbar</string>
+  <key>CFBundleIdentifier</key><string>com.claudetaskbar.app</string>
+  <key>CFBundleExecutable</key><string>ClaudeTaskbar</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1.0.0</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHumanReadableCopyright</key><string>Shows your Claude tasks, always on top.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Claude Taskbar switches to a claude.ai chat's Chrome tab when you click it.</string>
+</dict>
+</plist>
