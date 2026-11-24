@@ -16,6 +16,7 @@ let questionsDir = baseDir + "/questions"
 let answersDir = baseDir + "/answers"
 let webOutDir = baseDir + "/web-out"
 let aliveFile = baseDir + "/panel.alive"
+let channelsDir = baseDir + "/channels"
 let panelWidth: CGFloat = 360
 let maxRows = 12
 let maxCards = 3
@@ -46,11 +47,14 @@ struct TaskItem {
     let last: String
     let promptCount: Int    // goes up with every prompt; brings back a removed task
     let updated: Double
+    let pid: Int            // the Claude Code process
 }
 
 struct Question {
     let id: String
-    let kind: String        // "permission", "choice", "reply"
+    /// "permission", "choice", "reply": answerable here.
+    /// "permission-info", "choice-info", "reply-info": view-only, answer in Claude Code.
+    let kind: String
     let source: String      // "code" or "web"
     let title: String
     let body: String
@@ -58,6 +62,8 @@ struct Question {
     let sessionId: String
     let tabId: String
     let tabURL: String
+    var live = false        // synced through the channel: the terminal can answer too
+    var claudePid = 0
 }
 
 func readJSON(_ path: String) -> [String: Any]? {
@@ -97,7 +103,7 @@ func loadItems(dir: String, source: String, maxAge: Double) -> [TaskItem] {
             title: str("title"), prompt: str("prompt"), detail: str("detail"), project: str("project"),
             appBundle: str("app_bundle"), term: str("term"), url: str("url"),
             last: str("last"), promptCount: (obj["prompt_count"] as? NSNumber)?.intValue ?? 0,
-            updated: updated))
+            updated: updated, pid: (obj["pid"] as? NSNumber)?.intValue ?? 0))
     }
     return out
 }
@@ -109,14 +115,17 @@ func loadCodeQuestions() -> [Question] {
     for name in names where name.hasSuffix(".json") {
         let path = questionsDir + "/" + name
         guard let obj = readJSON(path) else { continue }
-        if processGone(obj, key: "hook_pid") {   // Claude Code cancelled the hook
+        // The hook was cancelled, or the Claude Code session is gone.
+        if processGone(obj, key: "hook_pid") || processGone(obj, key: "claude_pid") {
             try? fm.removeItem(atPath: path)
             continue
         }
         let str: (String) -> String = { (obj[$0] as? String) ?? "" }
-        let q = Question(id: str("id"), kind: str("kind"), source: "code", title: str("title"),
+        var q = Question(id: str("id"), kind: str("kind"), source: "code", title: str("title"),
                          body: str("body"), questions: (obj["questions"] as? [[String: Any]]) ?? [],
                          sessionId: str("session_id"), tabId: "", tabURL: "")
+        q.live = (obj["live"] as? Bool) ?? false
+        q.claudePid = (obj["claude_pid"] as? NSNumber)?.intValue ?? 0
         found.append(((obj["created"] as? NSNumber)?.doubleValue ?? 0, q))
     }
     return found.sorted { $0.0 < $1.0 }.map { $0.1 }
@@ -505,6 +514,7 @@ final class QuestionCard: NSView {
         switch question.kind {
         case "permission": buildPermission()
         case "choice": buildChoice()
+        case "permission-info", "choice-info", "reply-info": buildInfo()
         default: buildReply()
         }
     }
@@ -537,16 +547,59 @@ final class QuestionCard: NSView {
         return f
     }
 
-    // Permission prompt: Allow / Deny / hand back to the terminal.
+    private func hint(_ text: String) {
+        content.addArrangedSubview(makeWrappingLabel(text, size: 10.5, color: .secondaryLabelColor,
+                                                     width: innerWidth, maxLines: 2))
+    }
+
+    // Permission prompt: Allow / Deny. Live cards are also open in the terminal;
+    // blocking cards can be handed back to it.
     private func buildPermission() {
         if !question.body.isEmpty {
             content.addArrangedSubview(makeWrappingLabel(question.body, size: 11, width: innerWidth,
                                                          maxLines: 8, monospaced: true))
         }
+        if question.live { hint("Also open in Claude Code. Whichever you answer first is used.") }
         content.addArrangedSubview(buttonRow([
             button("Allow", #selector(allow), primary: true),
             button("Deny", #selector(deny)),
-            button("Answer in terminal", #selector(terminal)),
+            question.live ? button("Open Claude Code", #selector(openChat))
+                          : button("Answer in terminal", #selector(terminal)),
+        ]))
+    }
+
+    // View-only: this session isn't synced (or it's a multiple-choice question, which
+    // Claude Code only accepts in its own picker), so show it and offer a way there.
+    private func buildInfo() {
+        switch question.kind {
+        case "permission-info":
+            if !question.body.isEmpty {
+                content.addArrangedSubview(makeWrappingLabel(question.body, size: 11, width: innerWidth,
+                                                             maxLines: 8, monospaced: true))
+            }
+        case "choice-info":
+            for q in question.questions {
+                let text = (q["question"] as? String) ?? ""
+                content.addArrangedSubview(makeWrappingLabel(text, size: 12, weight: .medium, width: innerWidth))
+                let labels = ((q["options"] as? [[String: Any]]) ?? []).compactMap { $0["label"] as? String }
+                if !labels.isEmpty {
+                    content.addArrangedSubview(makeWrappingLabel(labels.map { "• " + $0 }.joined(separator: "\n"),
+                                                                 size: 11.5, color: .secondaryLabelColor,
+                                                                 width: innerWidth, maxLines: 8))
+                }
+            }
+        default:
+            if !question.body.isEmpty {
+                content.addArrangedSubview(makeWrappingLabel(question.body, size: 11.5, color: .secondaryLabelColor,
+                                                             width: innerWidth, maxLines: 10))
+            }
+        }
+        hint(question.kind == "choice-info"
+             ? "Pick your answer in Claude Code."
+             : "Answer in Claude Code. Start sessions with claude-tb to answer here too.")
+        content.addArrangedSubview(buttonRow([
+            button("Open Claude Code", #selector(openChat), primary: true),
+            button("Dismiss", #selector(dismiss)),
         ]))
     }
 
@@ -606,6 +659,9 @@ final class QuestionCard: NSView {
         var buttons = [button("Send reply", #selector(sendReply), primary: true)]
         if question.source == "web" {
             buttons.append(button("Open chat", #selector(openChat)))
+            buttons.append(button("Dismiss", #selector(dismiss)))
+        } else if question.live {
+            buttons.append(button("Open Claude Code", #selector(openChat)))
             buttons.append(button("Dismiss", #selector(dismiss)))
         } else {
             buttons.append(button("Answer in terminal", #selector(terminal)))
@@ -680,11 +736,74 @@ enum Setup {
     static func installScripts() {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: baseDir, withIntermediateDirectories: true)
-        for name in ["claude_hook.py", "web_bridge.py"] {
+        for name in ["claude_hook.py", "web_bridge.py", "channel_server.py"] {
             let src = resources + "/" + name, dst = baseDir + "/" + name
             guard fm.fileExists(atPath: src) else { continue }
             try? fm.removeItem(atPath: dst)
             try? fm.copyItem(atPath: src, toPath: dst)
+        }
+        installLauncher()
+    }
+
+    static let launcherDir = baseDir + "/bin"
+    static let launcher = launcherDir + "/claude-tb"
+    static let shellProfile = NSHomeDirectory() + "/.zshrc"
+    static let pathLine = "export PATH=\"$HOME/.claude-taskbar/bin:$PATH\"  # Claude Taskbar (claude-tb)"
+
+    /// `claude-tb` starts Claude Code with the Claude Taskbar channel, so questions can be
+    /// answered in the terminal or the panel.
+    static func installLauncher() {
+        let fm = FileManager.default
+        let config: [String: Any] = ["mcpServers": ["claude-taskbar": [
+            "command": python, "args": [baseDir + "/channel_server.py"]]]]
+        if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted]) {
+            try? data.write(to: URL(fileURLWithPath: baseDir + "/mcp.json"), options: .atomic)
+        }
+        try? fm.createDirectory(atPath: launcherDir, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        # Claude Code with two-way sync to Claude Taskbar. Takes the same arguments as claude.
+        exec claude --mcp-config "$HOME/.claude-taskbar/mcp.json" \\
+          --dangerously-load-development-channels server:claude-taskbar "$@"
+
+        """
+        try? script.write(toFile: launcher, atomically: true, encoding: .utf8)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcher)
+    }
+
+    static var launcherOnPath: Bool {
+        let profile = (try? String(contentsOfFile: shellProfile, encoding: .utf8)) ?? ""
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        return profile.contains(".claude-taskbar/bin") || path.contains(".claude-taskbar/bin")
+    }
+
+    static func setUpTwoWaySync() {
+        installLauncher()
+        let text = """
+        Start Claude Code with claude-tb instead of claude. Permission prompts and Claude's questions then show in the terminal and in the panel at the same time, and you can answer in either one. The other side clears.
+
+        claude-tb takes the same arguments as claude. Claude Code shows a warning about development channels each time it starts; choose "I am using this for local development".
+
+        Sessions started with plain claude still appear in the panel, with questions shown read-only and an Open Claude Code button.
+
+        Multiple-choice questions can only be answered in Claude Code's own picker.
+        """
+        if launcherOnPath {
+            alert("Two-way sync with claude-tb", text + "\n\nclaude-tb is ready. Open a new terminal window to use it.")
+            return
+        }
+        let answer = alert("Two-way sync with claude-tb",
+                           text + "\n\nAdd claude-tb to your PATH? This adds one line to ~/.zshrc.",
+                           buttons: ["Add to PATH", "Not Now"])
+        guard answer == .alertFirstButtonReturn else { return }
+        var profile = (try? String(contentsOfFile: shellProfile, encoding: .utf8)) ?? ""
+        if !profile.isEmpty && !profile.hasSuffix("\n") { profile += "\n" }
+        profile += pathLine + "\n"
+        do {
+            try profile.write(toFile: shellProfile, atomically: true, encoding: .utf8)
+            alert("claude-tb is ready", "Open a new terminal window, go to your project and run claude-tb.")
+        } catch {
+            alert("Couldn't update ~/.zshrc", "Add this line yourself:\n\n" + pathLine)
         }
     }
 
@@ -767,7 +886,7 @@ enum Setup {
             return
         }
         alert("Connected to Claude Code",
-              "Restart any Claude Code sessions that are already open.\n\nTo follow claude.ai chats as well, choose Set Up Chrome Extension from the Claude Taskbar menu.")
+              "Restart any Claude Code sessions that are already open.\n\nTo answer Claude's questions from the panel as well as the terminal, choose Two-Way Sync with claude-tb from the Claude Taskbar menu. To follow claude.ai chats, choose Set Up Chrome Extension.")
     }
 
     static func disconnect() {
@@ -864,7 +983,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingSince = 0.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        for d in [codeDir, webDir, questionsDir, answersDir, webOutDir] {
+        for d in [codeDir, webDir, questionsDir, answersDir, webOutDir, channelsDir] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
         buildPanel()
@@ -963,6 +1082,9 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let chrome = NSMenuItem(title: "Set Up Chrome Extension…", action: #selector(setUpChrome),
                                 keyEquivalent: "")
         chrome.target = self
+        let sync = NSMenuItem(title: "Two-Way Sync with claude-tb…", action: #selector(setUpSync),
+                              keyEquivalent: "")
+        sync.target = self
         loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         loginItem.target = self
         let about = NSMenuItem(title: "About Claude Taskbar", action: #selector(showAbout), keyEquivalent: "")
@@ -973,6 +1095,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(restoreItem)
         menu.addItem(.separator())
         menu.addItem(connectItem)
+        menu.addItem(sync)
         menu.addItem(chrome)
         if #available(macOS 13.0, *) { menu.addItem(loginItem) }
         menu.addItem(.separator())
@@ -994,6 +1117,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func setUpChrome() { Setup.setUpChromeExtension() }
+
+    @objc private func setUpSync() { Setup.setUpTwoWaySync() }
 
     @objc private func toggleLogin() { Setup.setOpensAtLogin(!Setup.opensAtLogin) }
 
@@ -1030,6 +1155,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Sessions with an open question show as needing you.
         let askingSessions = Set(questions.map { $0.sessionId }.filter { !$0.isEmpty })
+            .union(items.filter { item in item.source == "code" && item.pid > 0 &&
+                                  questions.contains { $0.claudePid == item.pid } }.map { $0.id })
         let askingTabs = Set(questions.map { $0.tabId }.filter { !$0.isEmpty })
         for i in items.indices where askingSessions.contains(items[i].id) || askingTabs.contains(items[i].id) {
             items[i].state = "waiting"
@@ -1209,15 +1336,32 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 handled.insert(q.id)
             }
         } else {
-            var ans = payload
-            ans["action"] = action
-            writeJSON(ans, to: "\(answersDir)/\(q.id).json")
-            handled.insert(q.id)
-            if action == "terminal", let session = sessions[q.sessionId] { open(session) }
+            switch action {
+            case "open":
+                if let session = session(for: q) { open(session) }
+                return
+            case "dismiss":
+                // Only hides the card; the question stays open in Claude Code.
+                handled.insert(q.id)
+                if !q.live { try? FileManager.default.removeItem(atPath: "\(questionsDir)/\(q.id).json") }
+            default:
+                var ans = payload
+                ans["action"] = action
+                writeJSON(ans, to: "\(answersDir)/\(q.id).json")
+                handled.insert(q.id)
+                if action == "terminal", let session = session(for: q) { open(session) }
+            }
         }
         panel.makeFirstResponder(nil)
         if action != "terminal" { returnFocus() }
         refresh()
+    }
+
+    /// Cards from the channel know the Claude Code process, not the session id.
+    private func session(for q: Question) -> TaskItem? {
+        if let s = sessions[q.sessionId] { return s }
+        guard q.claudePid > 0 else { return nil }
+        return sessions.values.first { $0.pid == q.claudePid }
     }
 
     /// Typing an answer gives the panel the keyboard; hand it back to the app you were in.

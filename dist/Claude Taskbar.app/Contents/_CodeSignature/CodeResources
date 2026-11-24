@@ -8,6 +8,10 @@
 		<data>
 		ErDQpC91P5+EN4QjVx3km7vy1Bk=
 		</data>
+		<key>Resources/channel_server.py</key>
+		<data>
+		eB4Ea83XtYmxhxaDzhLOsXkhL6w=
+		</data>
 		<key>Resources/chrome-extension/background.js</key>
 		<data>
 		UQ+sOiD2PIW+nesARnZCN4NwgLA=
@@ -22,7 +26,7 @@
 		</data>
 		<key>Resources/claude_hook.py</key>
 		<data>
-		5xIRwnjcq7eXmkMAbLU8B+Tvu3Y=
+		ViozRyJRSUwfmMqbynO/DgZR3NE=
 		</data>
 		<key>Resources/install_hooks.py</key>
 		<data>
@@ -40,6 +44,13 @@
 			<key>hash2</key>
 			<data>
 			WuTZFg6+PlyeWvJg9xZ4hPiuu81HhMkP5XaJeYFj2HE=
+			</data>
+		</dict>
+		<key>Resources/channel_server.py</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			r/Z2pS9LcinLbxofD5IQu5Y2ANKQZGQdNaoKqJvl57I=
 			</data>
 		</dict>
 		<key>Resources/chrome-extension/background.js</key>
@@ -67,7 +78,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			vFVQ4pSfQUlDK/R3Tgm4zALxjq8wkF4iJGVU7PX5Ifs=
+			KXMB9dgZRYaGZh0uAP1CyCMEI1+fPwkw3qk2rX8u+r8=
 			</data>
 		</dict>
 		<key>Resources/install_hooks.py</key>

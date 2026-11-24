@@ -41,35 +41,45 @@ Python 3 is needed for the hooks. It comes with Apple's Command Line Tools, whic
 
 ## Answering questions in the panel
 
-When Claude needs you, a card appears at the top of the panel with a soft sound. Click into a card to type; the keyboard goes back to your previous app after you answer.
+When Claude needs you, a card appears at the top of the panel with a soft sound. **Claude Code never waits for the panel**: the question is still in the terminal, and whichever side you answer, the other clears.
 
-| Claude is asking | Where | What you can do in the card |
+### Two-way sync: start Claude Code with `claude-tb`
+
+Choose **Two-Way Sync with claude-tb…** in the menu bar icon once (it can add `~/.claude-taskbar/bin` to your PATH). Then run `claude-tb` instead of `claude`; it takes the same arguments. It starts Claude Code with Claude Taskbar's channel (`channel_server.py`), so:
+
+| Claude is asking | Panel | Terminal |
 |---|---|---|
-| Permission to run a command, edit a file, or use a tool | Claude Code | **Allow**, **Deny**, or **Answer in terminal** |
-| A multiple-choice question | Claude Code | Pick options, or type your own answer, then **Send answer** |
-| A question at the end of its reply | Claude Code | Type a reply and press Return |
-| A question at the end of its reply | claude.ai | Type a reply and press Return, or **Open chat** / **Dismiss** |
+| Permission to run a command, edit a file, or use a tool | **Allow** / **Deny** | its usual dialog; first answer wins |
+| A question at the end of its reply | type a reply, press Return | type your reply as usual |
+| A multiple-choice question | shown read-only | pick in Claude Code's picker |
+
+Channels are a Claude Code research preview: Claude Code shows a warning about development channels on every start (choose "I am using this for local development"), and Team/Enterprise organizations must allow channels.
+
+### Sessions started with plain `claude`
+
+Questions show as read-only cards with **Open Claude Code** (brings the terminal forward) and **Dismiss**.
+
+### claude.ai
+
+When a claude.ai reply ends with a question, type a reply and press Return, or **Open chat** / **Dismiss**.
 
 A "question at the end of its reply" means the last line of Claude's message ends with a question mark.
 
-**While a Claude Code card is open, the terminal waits for the panel.** Answer in the card, or click **Answer in terminal** to get the normal prompt back. If you don't answer within 10 minutes, or you quit the panel, the question goes back to the terminal by itself.
-
-**Answer in terminal** is also the way to pick choices the card doesn't offer, such as "always allow this command."
-
 ### Settings
 
-Create `~/.claude-taskbar/config.json` to change what the panel handles:
+Create `~/.claude-taskbar/config.json` to change what the panel shows:
 
 ```json
 {
   "permissions": true,
   "choices": true,
   "replies": true,
+  "blocking": false,
   "timeout_seconds": 600
 }
 ```
 
-Set any of the first three to `false` to keep that kind of question in the terminal only. Changes apply right away.
+Set any of the first three to `false` to keep that kind of question in the terminal only. `"blocking": true` brings back the old behavior for sessions without `claude-tb`: the panel takes the question and Claude Code waits for it (**Answer in terminal** hands it back; after `timeout_seconds` it goes back by itself).
 
 ## The task list
 
@@ -103,10 +113,10 @@ In the menu bar icon, choose **Disconnect from Claude Code**, then **Quit**, and
 
 ```
 Claude Code ── hooks ──> claude_hook.py ──> sessions/*.json, questions/*.json ─┐
-            <── decision ── claude_hook.py <── answers/*.json <────────────────┤
+            ── channel ─> channel_server.py ─> questions/*.json <── answers/ ───┤
                                                                                ├── ClaudeTaskbar (panel)
 claude.ai tab ── extension ──> web_bridge.py (127.0.0.1:47823) ──> web/*.json ─┤
               <── reply ───── web_bridge.py <── web-out/*.json <───────────────┘
 ```
 
-All files live in `~/.claude-taskbar/`. The panel touches `panel.alive` twice a second; the hooks only wait for an answer while that file is fresh.
+All files live in `~/.claude-taskbar/`. The panel touches `panel.alive` twice a second; hooks and the channel only show cards while that file is fresh.

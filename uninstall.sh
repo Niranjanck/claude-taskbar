@@ -9,6 +9,7 @@ for label in com.claudetaskbar.widget com.claudetaskbar.bridge; do
   rm -f "$HOME/Library/LaunchAgents/$label.plist"
 done
 /usr/bin/python3 "$SRC/install_hooks.py" --remove
+[ -f "$HOME/.zshrc" ] && sed -i "" "/# Claude Taskbar (claude-tb)$/d" "$HOME/.zshrc"
 rm -rf "$HOME/.claude-taskbar" "$HOME/Applications/Claude Taskbar.app" "/Applications/Claude Taskbar.app"
 echo "Claude Taskbar removed. Remove the Chrome extension from chrome://extensions, and"
 echo "Claude Taskbar from System Settings > General > Login Items if it's still listed."

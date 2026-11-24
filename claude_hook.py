@@ -2,14 +2,17 @@
 """Claude Code hook for Claude Taskbar.
 
 Two modes:
-  claude_hook.py          Records the session's live state (fast, never blocks).
-  claude_hook.py --ask    Sends Claude's questions to the panel and waits for your answer:
-                          - PermissionRequest: Allow / Deny
-                          - PreToolUse(AskUserQuestion): pick options or type an answer
-                          - Stop: when Claude's last line is a question, reply in the panel
+  claude_hook.py          Records the session's live state (fast, never blocks), and
+                          clears question cards once they're answered in Claude Code.
+  claude_hook.py --ask    Shows Claude's questions in the panel:
+                          - PermissionRequest
+                          - PreToolUse(AskUserQuestion)
+                          - Stop, when Claude's last line is a question
 
-If the panel isn't running, or you choose "Answer in terminal", or the wait times out,
-the hook steps aside and Claude Code shows its normal prompt in the terminal.
+Claude Code never waits on the panel (unless config.json has "blocking": true):
+  - Sessions started with `claude-tb` are synced through channel_server.py: permission
+    prompts and replies can be answered in the panel or the terminal, first answer wins.
+  - Other sessions get view-only cards with an "Open Claude Code" button.
 Nothing is printed except the decision JSON Claude Code reads.
 """
 import json
@@ -26,6 +29,7 @@ BASE = os.path.expanduser("~/.claude-taskbar")
 SESSIONS_DIR = os.path.join(BASE, "sessions")
 QUESTIONS_DIR = os.path.join(BASE, "questions")
 ANSWERS_DIR = os.path.join(BASE, "answers")
+CHANNELS_DIR = os.path.join(BASE, "channels")
 ALIVE_FILE = os.path.join(BASE, "panel.alive")
 CONFIG_FILE = os.path.join(BASE, "config.json")
 SHELLS = {"sh", "bash", "zsh", "dash", "fish", "env", "python3", "python"}
@@ -33,7 +37,8 @@ DEFAULT_CONFIG = {
     "permissions": True,      # answer permission prompts in the panel
     "choices": True,          # answer AskUserQuestion in the panel
     "replies": True,          # reply when Claude ends its turn with a question
-    "timeout_seconds": 600,   # then hand the question back to the terminal
+    "timeout_seconds": 600,   # blocking mode: then hand the question back to the terminal
+    "blocking": False,        # old behavior: Claude Code waits for the panel's answer
 }
 
 
@@ -91,6 +96,23 @@ def claude_pid():
             continue
         break
     return pid
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def synced_pid():
+    """The Claude Code pid if this session runs our channel (started with claude-tb), else None."""
+    pid = claude_pid()
+    marker = read_json(os.path.join(CHANNELS_DIR, f"{pid}.json"))
+    if isinstance(marker, dict) and pid_alive(marker.get("server_pid")):
+        return pid
+    return None
 
 
 def project_of(data, rec=None):
@@ -241,12 +263,65 @@ def update_status(data, **fields):
     write_atomic(SESSIONS_DIR, sid + ".json", rec)
 
 
+# ---------- clearing cards answered in Claude Code ----------
+#
+# Claude Code doesn't tell the panel (or a channel) when you answer in the terminal,
+# so the hooks that follow an answer remove the matching cards.
+
+def clear_questions(data, tool=None, before=None):
+    """tool: remove the oldest permission card for that tool (it was just allowed).
+    Otherwise remove every pending card of this session created before `before`."""
+    try:
+        names = [n for n in os.listdir(QUESTIONS_DIR) if n.endswith(".json")]
+    except OSError:
+        return
+    if not names:
+        return
+    sid = str(data.get("session_id") or "")
+    pid = None
+    matches = []
+    for name in names:
+        path = os.path.join(QUESTIONS_DIR, name)
+        q = read_json(path)
+        if not isinstance(q, dict) or q.get("hook_pid"):   # blocking cards clean up after themselves
+            continue
+        mine = sid and q.get("session_id") == sid
+        if not mine and q.get("claude_pid"):
+            if pid is None:
+                pid = claude_pid()
+            mine = q.get("claude_pid") == pid
+        if not mine:
+            continue
+        created = float(q.get("created") or 0)
+        if tool is not None:
+            if q.get("tool") == tool and q.get("kind") in ("permission", "permission-info"):
+                matches.append((created, path))
+            elif tool == "AskUserQuestion" and q.get("kind") == "choice-info":
+                matches.append((created, path))
+        elif before is None or created < before:
+            matches.append((created, path))
+    if tool is not None and tool != "AskUserQuestion":
+        matches = sorted(matches)[:1]
+    for _, path in matches:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def record(data):
     sid = str(data.get("session_id") or "")
     if not sid or "/" in sid:
         return
     event = data.get("hook_event_name", "")
     path = os.path.join(SESSIONS_DIR, sid + ".json")
+
+    if event in ("SessionEnd", "UserPromptSubmit"):
+        clear_questions(data)
+    elif event == "PostToolUse":
+        clear_questions(data, tool=str(data.get("tool_name") or ""))
+    elif event == "Notification" and "waiting for your input" in str(data.get("message") or "").lower():
+        clear_questions(data)   # e.g. a permission you denied in the terminal
 
     if event == "SessionEnd":
         try:
@@ -314,6 +389,14 @@ def new_question(data, kind, title, body, **extra):
          "created": time.time(), "hook_pid": os.getpid()}
     q.update(extra)
     return q
+
+
+def show_card(data, kind, title, body, **extra):
+    """A card the panel shows without Claude Code waiting for it."""
+    q = new_question(data, kind, title, body, **extra)
+    q.pop("hook_pid", None)
+    q.setdefault("claude_pid", claude_pid())
+    write_atomic(QUESTIONS_DIR, q["id"] + ".json", q)
 
 
 def permission_title(project, tool):
@@ -387,14 +470,20 @@ def handle_ask(data):
     inp = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
     project = project_of(data)
     timeout = max(10, min(int(cfg["timeout_seconds"]), 870))
+    blocking = bool(cfg.get("blocking"))
 
     if event == "PermissionRequest":
-        # AskUserQuestion is answered in PreToolUse; here it falls through to the terminal.
+        # AskUserQuestion is shown from PreToolUse; here it falls through to the terminal.
         if tool == "AskUserQuestion" or not cfg["permissions"] or not panel_alive():
             return
         update_status(data, state="waiting", detail="Needs your permission")
-        q = new_question(data, "permission", permission_title(project, tool),
-                         permission_body(tool, inp), tool=tool)
+        title, body = permission_title(project, tool), permission_body(tool, inp)
+        if synced_pid():
+            return   # the channel shows a live card; the terminal shows its dialog too
+        if not blocking:
+            show_card(data, "permission-info", title, body, tool=tool)
+            return
+        q = new_question(data, "permission", title, body, tool=tool)
         answer = ask_panel(q, timeout)
         action = (answer or {}).get("action")
         if action == "allow":
@@ -413,7 +502,12 @@ def handle_ask(data):
         if not cfg["choices"] or not panel_alive() or not isinstance(questions, list) or not questions:
             return
         update_status(data, state="waiting", detail="Asking you a question")
-        q = new_question(data, "choice", f"{project} has a question", "", questions=questions)
+        title = f"{project} has a question"
+        if not blocking:
+            # Claude Code only takes this answer in its own picker, so the card is view-only.
+            show_card(data, "choice-info", title, "", questions=questions, tool=tool)
+            return
+        q = new_question(data, "choice", title, "", questions=questions)
         answer = ask_panel(q, timeout)
         if answer and answer.get("action") == "answer" and isinstance(answer.get("answers"), dict):
             update_status(data, state="running", detail="Thinking")
@@ -427,6 +521,7 @@ def handle_ask(data):
                                          "permissionDecision": "ask"}})
 
     elif event == "Stop":
+        clear_questions(data, before=time.time())   # the turn is over; nothing is pending
         record(data)
         last = data.get("last_assistant_message") or last_message_from_transcript(
             data.get("transcript_path") or "")
@@ -436,7 +531,17 @@ def handle_ask(data):
         body = last.strip()
         if len(body) > 900:
             body = "…" + body[-900:]
-        q = new_question(data, "reply", f"{project} is asking you", body)
+        title = f"{project} is asking you"
+        pid = synced_pid()
+        if pid:
+            # The channel delivers a reply typed in the panel; typing in the terminal works too.
+            qid = f"ch-{pid}-r-{uuid.uuid4().hex[:10]}"
+            show_card(data, "reply", title, body, id=qid, live=True, claude_pid=pid)
+            return
+        if not blocking:
+            show_card(data, "reply-info", title, body)
+            return
+        q = new_question(data, "reply", title, body)
         answer = ask_panel(q, timeout)
         text = str((answer or {}).get("text") or "").strip()
         if answer and answer.get("action") == "reply" and text:
