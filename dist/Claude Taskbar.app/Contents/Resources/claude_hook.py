@@ -33,7 +33,6 @@ except OSError:
     pass
 SESSIONS_DIR = os.path.join(BASE, "sessions")
 QUESTIONS_DIR = os.path.join(BASE, "questions")
-ANSWERS_DIR = os.path.join(BASE, "answers")
 CHANNELS_DIR = os.path.join(BASE, "channels")
 ALIVE_FILE = os.path.join(BASE, "panel.alive")
 CONFIG_FILE = os.path.join(BASE, "config.json")
@@ -437,29 +436,24 @@ def record(data):
 # ---------- asking the panel ----------
 
 def ask_panel(question, timeout):
-    """Show a question in the panel and wait. Returns the answer dict, or None."""
+    """Show a question in the panel and wait. Returns the answer dict, or None.
+
+    The answer arrives over the panel's socket, from a peer verified to be the
+    Claude Taskbar app (panel_link.py); a file dropped anywhere can't answer."""
     qid = question["id"]
     qpath = os.path.join(QUESTIONS_DIR, qid + ".json")
-    apath = os.path.join(ANSWERS_DIR, qid + ".json")
-    os.makedirs(ANSWERS_DIR, exist_ok=True)
     write_atomic(QUESTIONS_DIR, qid + ".json", question)
     deadline = time.time() + timeout
     try:
-        while time.time() < deadline:
-            if os.path.exists(apath):
-                answer = read_json(apath)
-                if isinstance(answer, dict):
-                    return answer
-            if not panel_alive():
-                return None
-            time.sleep(0.25)
+        import panel_link
+        return panel_link.wait_for(qid, lambda: time.time() < deadline and panel_alive())
+    except Exception:
         return None
     finally:
-        for p in (qpath, apath):
-            try:
-                os.remove(p)
-            except FileNotFoundError:
-                pass
+        try:
+            os.remove(qpath)
+        except FileNotFoundError:
+            pass
 
 
 def new_question(data, kind, title, body, **extra):

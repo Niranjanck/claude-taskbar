@@ -1,14 +1,23 @@
 {
   "manifest_version": 3,
   "name": "Claude Taskbar Bridge",
-  "version": "1.1.0",
-  "description": "Reports the state of open claude.ai chats to the Claude Taskbar widget on this Mac.",
-  "host_permissions": ["http://127.0.0.1:47823/*"],
-  "background": { "service_worker": "background.js" },
+  "version": "1.2.0",
+  "description": "Reports the state of open claude.ai chats to the Claude Taskbar panel on this Mac.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAviDozBVv3H1hknbV5ScAzQFtlf83LE5dOl6CcF2MI4kQfBZLxDaco6dfce85yZi/8MOaAmjAFp9K0D2s5310i9VSU5BnqL5WBiSd4VHdh9TIqRAgQhaFn9QwtbBD1ChghP9qqVtwIwCLk2P1AKOA7rFHoHh3enwNsUypZkzESZ3RJde7T5fqidpu0XAllgMNqoDXebM34u1OKFSFw3xrJ6pwbbCnwGg4g0OBigTVYv5xlt7aPwMH2nFyMrMJ0dSDTmdBaf7jsLiehd/89s0w716Apg+AxaWkkDFT2ssq/gnSEhpuBsvsZKRPHyAxjsfIqHN5cvan7UlwKf4bBc2bvQIDAQAB",
+  "permissions": [
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

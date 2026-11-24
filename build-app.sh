@@ -34,7 +34,7 @@ swiftc -O -target x86_64-apple-macos11 "$SRC/ClaudeTaskbar.swift" -o "$OUT/x86_6
 lipo -create -output "$APP/Contents/MacOS/ClaudeTaskbar" "$OUT/arm64" "$OUT/x86_64"
 rm "$OUT/arm64" "$OUT/x86_64"
 
-cp "$SRC/AppIcon.icns" "$SRC/claude_hook.py" "$SRC/web_bridge.py" "$SRC/install_hooks.py" "$SRC/channel_server.py" "$APP/Contents/Resources/"
+cp "$SRC/AppIcon.icns" "$SRC/claude_hook.py" "$SRC/install_hooks.py" "$SRC/channel_server.py" "$SRC/panel_link.py" "$SRC/native_host.py" "$APP/Contents/Resources/"
 cp -R "$SRC/chrome-extension" "$APP/Contents/Resources/chrome-extension"
 find "$APP" -name '__pycache__' -prune -exec rm -rf {} +
 xattr -cr "$APP"   # stray attributes break the signature and end up as ._ files in the .pkg

@@ -13,8 +13,7 @@ let baseDir = NSHomeDirectory() + "/.claude-taskbar"
 let codeDir = baseDir + "/sessions"
 let webDir = baseDir + "/web"
 let questionsDir = baseDir + "/questions"
-let answersDir = baseDir + "/answers"
-let webOutDir = baseDir + "/web-out"
+let socketPath = baseDir + "/panel.sock"
 let aliveFile = baseDir + "/panel.alive"
 let channelsDir = baseDir + "/channels"
 let panelWidth: CGFloat = 360
@@ -933,13 +932,41 @@ enum Setup {
     static func installScripts() {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: baseDir, withIntermediateDirectories: true)
-        for name in ["claude_hook.py", "web_bridge.py", "channel_server.py"] {
+        for name in ["claude_hook.py", "channel_server.py", "panel_link.py", "native_host.py"] {
             let src = resources + "/" + name, dst = baseDir + "/" + name
             guard fm.fileExists(atPath: src) else { continue }
             try? fm.removeItem(atPath: dst)
             try? fm.copyItem(atPath: src, toPath: dst)
         }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: baseDir + "/native_host.py")
+        // Replaced by native messaging; the old localhost bridge, if one outlived an older
+        // version of the app, and its folders go away.
+        run("/usr/bin/pkill", ["-f", "/.claude-taskbar/web_bridge.py"])
+        for old in ["web_bridge.py", "web-out", "answers"] { try? fm.removeItem(atPath: baseDir + "/" + old) }
+        installNativeHost()
         installLauncher()
+    }
+
+    static let extensionID = "hdlholpbfnbghdhgbdaafdjfnnickejb"   // fixed by the key in manifest.json
+    static let nativeHostName = "com.claudetaskbar.bridge"
+    static let nativeHostDirs = ["Google/Chrome", "Google/Chrome Beta", "Chromium", "BraveSoftware/Brave-Browser"]
+
+    /// Lets Chrome start native_host.py, for the Claude Taskbar extension only.
+    static func installNativeHost() {
+        let manifest: [String: Any] = [
+            "name": nativeHostName,
+            "description": "Claude Taskbar: claude.ai tab status and replies",
+            "path": baseDir + "/native_host.py",
+            "type": "stdio",
+            "allowed_origins": ["chrome-extension://\(extensionID)/"],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted]) else { return }
+        let support = NSHomeDirectory() + "/Library/Application Support/"
+        for browser in nativeHostDirs where FileManager.default.fileExists(atPath: support + browser) {
+            let dir = support + browser + "/NativeMessagingHosts"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try? data.write(to: URL(fileURLWithPath: dir + "/\(nativeHostName).json"), options: .atomic)
+        }
     }
 
     static let launcherDir = baseDir + "/bin"
@@ -968,8 +995,10 @@ enum Setup {
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcher)
     }
 
-    /// config.json "blocking": the panel takes questions and Claude Code waits for the answer.
-    /// The only way to answer here when channels are unavailable (e.g. blocked by the org).
+    /// config.json "blocking": the panel takes questions through the standard PermissionRequest,
+    /// PreToolUse and Stop hooks, and Claude Code waits for the answer. Separate from channels:
+    /// it doesn't load or enable them. An organization that turned channels off may also want
+    /// to restrict this; check with your admin (managed settings can limit hooks).
     static var blocking: Bool {
         get { (readJSON(baseDir + "/config.json")?["blocking"] as? Bool) ?? false }
         set {
@@ -1122,42 +1151,104 @@ enum Setup {
             NSWorkspace.shared.open([page], withApplicationAt: chrome,
                                     configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
         }
+        installNativeHost()
         alert("Set up the Chrome extension",
-              "Chrome's extensions page and the extension's folder are now open.\n\n1. In Chrome, turn on Developer mode (top right).\n2. Click Load unpacked.\n3. Choose the chrome-extension folder shown in Finder.\n\nAlready set it up from this folder? Click the extension's reload button instead.")
+              "Chrome's extensions page and the extension's folder are now open.\n\n1. In Chrome, turn on Developer mode (top right).\n2. Click Load unpacked.\n3. Choose the chrome-extension folder shown in Finder.\n\nSet it up before version 1.2? Remove the old Claude Taskbar Bridge first (it used a local web server; this one talks to the app directly), then load the folder again.")
     }
 }
 
-/// Runs the local bridge for the Chrome extension, restarting it if it stops.
-final class BridgeRunner {
-    private var process: Process?
-    private var stopping = false
-    private var startedAt = Date.distantPast
+/// Sends answers to whoever is waiting for them, over a Unix socket only.
+///
+/// Answers are never written to files: anything running as you could forge a file and
+/// approve a permission prompt. The hook, the channel server and the Chrome host connect
+/// to this socket and check (panel_link.py) that the peer is this app before trusting
+/// what it sends.
+///   client -> panel  {"wait": "<question id>"} or {"subscribe": "<id prefix>"}
+///   panel -> client  {"id": "<question id>", "answer": {...}}
+final class AnswerServer {
+    private struct Client { var key = ""; var prefix = false; var buffer = Data(); let source: DispatchSourceRead }
+    private var listenSource: DispatchSourceRead?
+    private var clients: [Int32: Client] = [:]
 
     func start() {
-        let script = baseDir + "/web_bridge.py"
-        guard !stopping, process == nil, FileManager.default.fileExists(atPath: script) else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: python)
-        p.arguments = [script]
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        p.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.process = nil
-                guard !self.stopping else { return }
-                // Failed right away (port busy, for example)? Wait longer before trying again.
-                let delay: Double = Date().timeIntervalSince(self.startedAt) < 5 ? 30 : 2
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.start() }
+        unlink(socketPath)
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(socketPath.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: addr.sun_path) else { close(fd); return }
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            for (i, b) in bytes.enumerated() { raw[i] = b }
+            raw[bytes.count] = 0
+        }
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        startedAt = Date()
-        do { try p.run(); process = p } catch {}
+        guard bound == 0, listen(fd, 32) == 0 else { close(fd); return }
+        chmod(socketPath, 0o600)
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        let src = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+        src.setEventHandler { [weak self] in self?.accept(on: fd) }
+        src.resume()
+        listenSource = src
+    }
+
+    private func accept(on listenFD: Int32) {
+        while true {
+            let c = Darwin.accept(listenFD, nil, nil)
+            guard c >= 0 else { return }
+            var one: Int32 = 1
+            setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+            _ = fcntl(c, F_SETFL, fcntl(c, F_GETFL) | O_NONBLOCK)
+            let src = DispatchSource.makeReadSource(fileDescriptor: c, queue: .main)
+            src.setEventHandler { [weak self] in self?.read(from: c) }
+            src.setCancelHandler { close(c) }
+            clients[c] = Client(source: src)
+            src.resume()
+        }
+    }
+
+    private func read(from fd: Int32) {
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        let n = Darwin.read(fd, &chunk, chunk.count)
+        guard n > 0, var client = clients[fd] else { drop(fd); return }
+        client.buffer.append(contentsOf: chunk[0..<n])
+        if client.buffer.count > 65536 { drop(fd); return }
+        while let nl = client.buffer.firstIndex(of: 10) {
+            let line = client.buffer[client.buffer.startIndex..<nl]
+            client.buffer.removeSubrange(client.buffer.startIndex...nl)
+            guard let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any] else { continue }
+            if let id = obj["wait"] as? String { client.key = id; client.prefix = false }
+            if let pre = obj["subscribe"] as? String, !pre.isEmpty { client.key = pre; client.prefix = true }
+        }
+        clients[fd] = client
+    }
+
+    private func drop(_ fd: Int32) {
+        clients.removeValue(forKey: fd)?.source.cancel()
+    }
+
+    /// Sends the answer to every client waiting for this id. False if nobody was.
+    @discardableResult
+    func deliver(_ id: String, _ answer: [String: Any]) -> Bool {
+        guard var data = try? JSONSerialization.data(withJSONObject: ["id": id, "answer": answer]) else { return false }
+        data.append(10)
+        var sent = false
+        for (fd, c) in clients where !c.key.isEmpty && (c.prefix ? id.hasPrefix(c.key) : id == c.key) {
+            let ok = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, data.count) } == data.count
+            sent = sent || ok
+            if !c.prefix || !ok { drop(fd) }
+        }
+        return sent
     }
 
     func stop() {
-        stopping = true
-        process?.terminate()
+        for fd in Array(clients.keys) { drop(fd) }
+        listenSource?.cancel()
+        unlink(socketPath)
     }
 }
 
@@ -1302,7 +1393,7 @@ enum SessionFocus {
 // MARK: - Controller
 
 final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let bridge = BridgeRunner()
+    private let answers = AnswerServer()
     private var panelItem: NSMenuItem!
     private var hotKey: EventHotKeyRef?
     private var connectItem: NSMenuItem!
@@ -1333,7 +1424,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         quitOtherCopies()
-        for d in [codeDir, webDir, questionsDir, answersDir, webOutDir, channelsDir] {
+        for d in [codeDir, webDir, questionsDir, channelsDir] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
         // The folder holds prompts, replies and commands; only this user may read it.
@@ -1352,9 +1443,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Setup.installScripts()
             // Picks up hooks added in newer versions; writes nothing when already current.
             if Setup.hooksConnected { Setup.run(python, [Setup.resources + "/install_hooks.py"]) }
-            // A moment's wait lets an old bridge from launchd release its port.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.bridge.start() }
         }
+        answers.start()
         DispatchQueue.main.async { Setup.firstRunIfNeeded() }
     }
 
@@ -1376,7 +1466,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         try? FileManager.default.removeItem(atPath: aliveFile)   // hooks stop waiting on us
-        bridge.stop()
+        answers.stop()
     }
 
     private func buildPanel() {
@@ -1488,7 +1578,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleConnect() {
         if Setup.hooksConnected { Setup.disconnect() } else { Setup.connect() }
-        if Setup.hasCommandLineTools() { bridge.start() }
     }
 
     @objc private func setUpChrome() { Setup.setUpChromeExtension() }
@@ -1705,10 +1794,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if q.source == "web" {
             switch action {
             case "reply":
-                var msg = payload
-                msg["id"] = q.tabId
-                let stamp = Int(Date().timeIntervalSince1970 * 1000)
-                writeJSON(msg, to: "\(webOutDir)/\(q.tabId)-\(stamp).json")
+                // To the Chrome extension's native host, which types it into the tab.
+                guard answers.deliver("web:\(q.tabId)", payload) else {
+                    Setup.alert("Couldn't send the reply",
+                                "The Claude Taskbar extension isn't connected. Reload it in chrome://extensions, or choose Set Up Chrome Extension from the menu bar icon.")
+                    return
+                }
                 handled.insert(q.id)
             case "open":
                 focusClaudeTab(q.tabURL)
@@ -1728,7 +1819,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default:
                 var ans = payload
                 ans["action"] = action
-                writeJSON(ans, to: "\(answersDir)/\(q.id).json")
+                answers.deliver(q.id, ans)   // to the waiting hook or channel, never via a file
                 handled.insert(q.id)
                 if action == "terminal", let session = session(for: q) { open(session) }
             }

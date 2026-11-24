@@ -8,6 +8,8 @@ Claude Code starts this as an MCP server (stdio JSON-RPC) when you run `claude-t
   - Replies: when Claude ends its turn with a question, the hook writes a reply card
     whose id starts with our prefix. A reply typed in the panel is delivered into the
     session as a channel message.
+  - Answers come only from the panel's socket, verified to be the Claude Taskbar app
+    (panel_link.py), never from files.
 
 Claude Code doesn't tell a channel when the terminal answered first; the hooks clear
 those cards (see clear_questions in claude_hook.py).
@@ -27,7 +29,6 @@ try:  # holds prompts, replies and commands: only this user may read it
 except OSError:
     pass
 QUESTIONS_DIR = os.path.join(BASE, "questions")
-ANSWERS_DIR = os.path.join(BASE, "answers")
 CHANNELS_DIR = os.path.join(BASE, "channels")
 ALIVE_FILE = os.path.join(BASE, "panel.alive")
 SHELLS = {"sh", "bash", "zsh", "dash", "fish", "env", "python3", "python"}
@@ -185,29 +186,18 @@ def deliver(qid, question, answer):
             notify("notifications/claude/channel", {"content": text, "meta": {"via": "panel"}})
 
 
+def on_panel_answer(qid, answer):
+    qpath = os.path.join(QUESTIONS_DIR, qid + ".json")
+    question = read_json(qpath)
+    remove(qpath)
+    if isinstance(question, dict):
+        deliver(qid, question, answer)
+
+
 def watch_answers():
-    """Picks up the panel's answers to this session's cards."""
-    while True:
-        try:
-            names = os.listdir(ANSWERS_DIR)
-        except OSError:
-            names = []
-        for name in names:
-            if not (name.startswith(PREFIX) and name.endswith(".json")):
-                continue
-            qid = name[:-5]
-            apath = os.path.join(ANSWERS_DIR, name)
-            qpath = os.path.join(QUESTIONS_DIR, name)
-            answer = read_json(apath)
-            question = read_json(qpath)
-            remove(apath)
-            remove(qpath)
-            if isinstance(answer, dict) and isinstance(question, dict):
-                try:
-                    deliver(qid, question, answer)
-                except Exception:
-                    pass
-        time.sleep(0.25)
+    """The panel's answers to this session's cards, from the verified panel socket only."""
+    import panel_link
+    panel_link.subscribe(PREFIX, on_panel_answer)
 
 
 def handle(msg):
@@ -245,7 +235,7 @@ def cleanup():
 
 
 def main():
-    for d in (QUESTIONS_DIR, ANSWERS_DIR, CHANNELS_DIR):
+    for d in (QUESTIONS_DIR, CHANNELS_DIR):
         os.makedirs(d, exist_ok=True)
     # Tells the hooks this session is synced, so they leave questions to the channel.
     write_atomic(CHANNELS_DIR, f"{CLAUDE_PID}.json",

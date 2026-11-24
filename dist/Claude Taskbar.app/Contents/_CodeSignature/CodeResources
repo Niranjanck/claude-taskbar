@@ -10,11 +10,11 @@
 		</data>
 		<key>Resources/channel_server.py</key>
 		<data>
-		OBLD/ej8Fgunz2ZW7/tCS+WQjP0=
+		McO7VlcL44bOLAlopZmOxPH0xNQ=
 		</data>
 		<key>Resources/chrome-extension/background.js</key>
 		<data>
-		UQ+sOiD2PIW+nesARnZCN4NwgLA=
+		BGltO032bq2bYmuX5C2/FD7Q93Q=
 		</data>
 		<key>Resources/chrome-extension/content.js</key>
 		<data>
@@ -22,19 +22,23 @@
 		</data>
 		<key>Resources/chrome-extension/manifest.json</key>
 		<data>
-		KP/ceH/zz/GagoLh+wMfSQtaRcc=
+		zeANzAKnHlSon/lV68ApAo4LEgg=
 		</data>
 		<key>Resources/claude_hook.py</key>
 		<data>
-		1lN/cdslFiLfxMIIi8ABcPmNVd8=
+		CPlUJqEchVgLD8Q6qiMPk/mzwOI=
 		</data>
 		<key>Resources/install_hooks.py</key>
 		<data>
 		izabF2qG3Q2el+dIK/gmWJS10io=
 		</data>
-		<key>Resources/web_bridge.py</key>
+		<key>Resources/native_host.py</key>
 		<data>
-		+0EFp/rQmacErZu54rNQVLij9uI=
+		qU5QJUISMehIgdK/ULB1Lx4Ty1w=
+		</data>
+		<key>Resources/panel_link.py</key>
+		<data>
+		7rnAzGq2yZVDMg7BrAS9ikPN2MI=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -50,14 +54,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			xf7mtJiNt68aAAW95o6GN29xs29BHYTecA0Ayz+9VUY=
+			RSeLMSuzCsfZotimD8evRMwhuxYj4roTSlphqruADrw=
 			</data>
 		</dict>
 		<key>Resources/chrome-extension/background.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			PbK78QK142FAIVIlPSpi5kyMkoXbvxN6Z4RPCbs1I1k=
+			7sgQ+slBZVAlcwC8jqNmap78SPf70qAgH+GrDYpeEnM=
 			</data>
 		</dict>
 		<key>Resources/chrome-extension/content.js</key>
@@ -71,14 +75,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			kjhrPM+/vhOCDSHltQCD6/0Vc0Rvz7P68pElLFBE/m8=
+			EPd54lygOGCmXjTYFWsSo0D0VZjlBEN5ZOSPu632voY=
 			</data>
 		</dict>
 		<key>Resources/claude_hook.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			NzVofVvw77AisH3LFEe1NSgjl7O9krvZY6V/J7dO3lc=
+			JE9NqmRR0Tb44ODBppVcLxTEe7h2Vqg+fYfXmJ3T0Ck=
 			</data>
 		</dict>
 		<key>Resources/install_hooks.py</key>
@@ -88,11 +92,18 @@
 			naY/h8Tn6krgVWCPVMYvHLOC+halZ6n+KjCdpioDTig=
 			</data>
 		</dict>
-		<key>Resources/web_bridge.py</key>
+		<key>Resources/native_host.py</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			hEFcOltE/JVSy8DcWMmO8CmH7SKWi2hKO7mIzeeagNM=
+			R5ilv4Au2TcGbKiSc8yvzwCST98MmpN34RgvP2/5xsw=
+			</data>
+		</dict>
+		<key>Resources/panel_link.py</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			3MeAuSqTqdoixEasu8aA5A6yGFyZ7UAukOJesGCVFe4=
 			</data>
 		</dict>
 	</dict>

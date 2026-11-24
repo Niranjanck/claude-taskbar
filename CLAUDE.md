@@ -5,21 +5,22 @@ An always-on-top macOS panel that lists every Claude Code session and claude.ai 
 ## How it fits together
 
 ```
-Claude Code ── hooks ──> claude_hook.py ──> ~/.claude-taskbar/sessions/*.json ─┐
-            ── channel ─> channel_server.py ─> questions/*.json  <── answers/ ──┤
-                                                                               ├── ClaudeTaskbar.app (panel)
-claude.ai tab ── extension ──> web_bridge.py (127.0.0.1:47823) ──> web/*.json ─┤
-              <── reply ───── web_bridge.py <── web-out/*.json <───────────────┘
+Claude Code ── hooks ──> claude_hook.py ──> sessions/*.json, questions/*.json ──┐
+            <── answer ── claude_hook.py <══ panel.sock (verified peer) ═══════┤
+            ── channel ─> channel_server.py ─> questions/*.json               ├── ClaudeTaskbar.app (panel)
+            <── verdict ─ channel_server.py <══ panel.sock ════════════════════┤
+claude.ai tab ── extension ── native messaging ─> native_host.py ─> web/*.json ┤
+              <── reply ───────────────────────── native_host.py <══ panel.sock┘
 ```
 
-Everything communicates through files in `~/.claude-taskbar/`:
+State goes through files in `~/.claude-taskbar/` (owner-only, 0700). **Answers never do**: the panel sends them only over the Unix socket `panel.sock` (0600), and every client (`panel_link.py`) checks the peer with `LOCAL_PEERPID` + `proc_pidpath` that it is `…/Claude Taskbar.app/Contents/MacOS/ClaudeTaskbar` before trusting it. A forged file or a stand-in socket can't approve a permission prompt or inject a reply. (A process running as the user can still do harm other ways, e.g. by editing the hook scripts or Claude Code settings; this closes the one-line-file-write path.)
 
 | Path | Written by | Read by |
 |---|---|---|
 | `sessions/<session_id>.json` | hooks | panel |
 | `questions/<id>.json` | hooks, channel server | panel |
-| `answers/<id>.json` | panel | blocking hook, channel server |
-| `web/<tab>.json`, `web-out/*.json` | bridge / panel | panel / bridge |
+| `panel.sock` | panel (Unix socket, answers only) | blocking hook, channel server, native host |
+| `web/<tab>.json` | native host | panel |
 | `channels/<claude_pid>.json` | channel server (marker: this session is synced) | hooks |
 | `panel.alive` | panel, touched every 0.5 s | hooks (only wait when fresh) |
 | `config.json` | user | hooks |
@@ -29,11 +30,12 @@ Writes are atomic (temp file + rename). Ids are validated before use as file nam
 
 ## Files
 
-- `ClaudeTaskbar.swift`: the whole app, one file, AppKit, no dependencies. Non-activating `NSPanel` (floating, all Spaces, full-screen auxiliary), menu bar status item, Carbon global hot key Control-Option-C, first-launch setup (`enum Setup`), the bridge runner, follow-the-mouse across screens, single-instance enforcement. Built with `swiftc`, not Xcode.
+- `ClaudeTaskbar.swift`: the whole app, one file, AppKit, no dependencies. Non-activating `NSPanel` (floating, all Spaces, full-screen auxiliary), menu bar status item, Carbon global hot key Control-Option-C, first-launch setup (`enum Setup`), `AnswerServer` (panel.sock), follow-the-mouse across screens, single-instance enforcement. Built with `swiftc`, not Xcode.
 - `claude_hook.py`: Claude Code hook. Plain mode records session state on SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SessionEnd. `--ask` mode handles PermissionRequest, PreToolUse(AskUserQuestion) and Stop. Never prints anything except decision JSON (stdout on UserPromptSubmit becomes model context).
 - `install_hooks.py`: adds/removes hooks in `~/.claude/settings.json`, keeps other hooks, backs up first, idempotent. Hook commands are identified by the marker `/.claude-taskbar/claude_hook.py`.
 - `channel_server.py`: MCP channel server (stdio JSON-RPC, stdlib only) for two-way sync. Declares `claude/channel` and `claude/channel/permission`; receives `notifications/claude/channel/permission_request`, writes a card, sends `notifications/claude/channel/permission` with the panel's verdict; delivers panel replies as `notifications/claude/channel`. Answers `protocolVersion` 2025-06-18 or older (Claude Code won't register a channel on 2026-07-28).
-- `web_bridge.py`, `chrome-extension/`: claude.ai tab status and replies. Bridge requires the `X-Claude-Taskbar: 1` header (blocks cross-origin pages) and only accepts `https://claude.ai/` URLs.
+- `panel_link.py`: client side of `panel.sock` with the peer check; used by the hook, channel server and native host.
+- `native_host.py`, `chrome-extension/`: claude.ai tab status and replies over Chrome native messaging (`com.claudetaskbar.bridge`, manifest in `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`, `allowed_origins` = the extension only). The manifest's `key` fixes the extension ID to `hdlholpbfnbghdhgbdaafdjfnnickejb`; don't change it. Only `https://claude.ai/` URLs are accepted. Replaced the localhost HTTP bridge (`web_bridge.py`, port 47823) in 1.2.0, which any local process or other account could reach.
 - `build-app.sh`: universal (arm64 + x86_64) app bundle in `dist/`, ad-hoc signed unless `DEVELOPER_ID` is set, plus a `.dmg` and a `.pkg` (non-relocatable, installs to /Applications). `VERSION`, `INSTALLER_ID`, `NOTARY_PROFILE` env vars.
 - `site/`: static landing page for Cloudflare Pages (project `claude-task-tracker`, https://claude-task-tracker.pages.dev). Styled after Claude's design (ivory, warm grays, serif headings, dark buttons). Download buttons point to `Claude-Taskbar-1.1.0.dmg` in the same folder.
 - `logo/`, `AppIcon.icns`: icon is a dark rounded square with a floating card, three status rows (blue working, orange needs you, green finished) and a white diamond pinned top-right. The menu bar glyph is that diamond as a template image.
@@ -69,7 +71,7 @@ Claude Code runs the PermissionRequest hook *before* showing its own prompt and 
 
 ## Testing
 
-- Python: `python3 -m py_compile claude_hook.py channel_server.py install_hooks.py web_bridge.py`. Hooks can be exercised by piping hook JSON into `claude_hook.py` with `HOME` pointed at a temp folder. The channel server can be driven by writing JSON-RPC lines to its stdin.
+- Python: `python3 -m py_compile claude_hook.py channel_server.py install_hooks.py panel_link.py native_host.py`. Hooks can be exercised by piping hook JSON into `claude_hook.py` with `HOME` pointed at a temp folder. The channel server can be driven by writing JSON-RPC lines to its stdin.
 - Swift: `bash build-app.sh`, then `pkill -x ClaudeTaskbar; open "dist/Claude Taskbar.app"`. Not unit tested.
 - Two-way sync, manual: start `claude-tb` in a project, ask Claude to create a file; the panel and the terminal both show the prompt. Answer in one, check the other clears. Repeat answering on the other side.
 - The two-way sync and the view-only cards were tested with simulated messages but not yet in a real `claude-tb` session; verify that first.
