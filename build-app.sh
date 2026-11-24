@@ -51,7 +51,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSHumanReadableCopyright</key><string>Shows your Claude tasks, always on top.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Claude Taskbar switches to a claude.ai chat's Chrome tab when you click it.</string>
+  <string>Claude Taskbar switches to the right Terminal or iTerm2 tab, or claude.ai chat in Chrome, when you click a task.</string>
 </dict>
 </plist>
 PLIST

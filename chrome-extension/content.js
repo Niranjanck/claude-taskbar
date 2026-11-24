@@ -23,7 +23,7 @@
   function lastReply() {
     const blocks = document.querySelectorAll(REPLY_SELECTOR);
     const el = blocks[blocks.length - 1];
-    return el ? el.innerText.trim().slice(-1000) : "";
+    return el ? el.innerText.trim().slice(-12000) : "";
   }
 
   function snapshot() {

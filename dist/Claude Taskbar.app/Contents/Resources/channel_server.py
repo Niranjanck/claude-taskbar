@@ -115,22 +115,59 @@ def permission_title(tool):
     return f"{PROJECT} wants to use {tool}"
 
 
+def mark_verified():
+    """Claude Code relayed a prompt, so this session's channel works (not blocked by policy)."""
+    marker = read_json(MARKER) or {}
+    if not marker.get("verified"):
+        marker.update({"claude_pid": CLAUDE_PID, "server_pid": os.getpid(), "verified": True})
+        write_atomic(CHANNELS_DIR, f"{CLAUDE_PID}.json", marker)
+
+
+def replace_info_card(tool):
+    """The hook already showed this prompt read-only; the live card takes its place."""
+    try:
+        names = os.listdir(QUESTIONS_DIR)
+    except OSError:
+        return
+    oldest = None
+    for name in names:
+        q = read_json(os.path.join(QUESTIONS_DIR, name))
+        if (isinstance(q, dict) and q.get("kind") == "permission-info" and q.get("tool") == tool
+                and q.get("claude_pid") == CLAUDE_PID):
+            if oldest is None or float(q.get("created") or 0) < oldest[0]:
+                oldest = (float(q.get("created") or 0), name)
+    if oldest:
+        remove(os.path.join(QUESTIONS_DIR, oldest[1]))
+
+
 def on_permission_request(params):
     request_id = str(params.get("request_id") or "")
     tool = str(params.get("tool_name") or "")
     if not request_id.isalpha() or not request_id.islower() or len(request_id) > 16:
         return
+    mark_verified()
     if tool == "AskUserQuestion" or not panel_alive():
         return
-    desc = str(params.get("description") or "").strip()
-    preview = str(params.get("input_preview") or "").strip()
-    body = "\n\n".join(p for p in (desc, preview) if p)[:700]
+    desc = " ".join(str(params.get("description") or "").split())[:300]
+    body = str(params.get("input_preview") or "").strip()
+    # The preview is JSON-shaped text; show a command as written when it parses.
+    try:
+        fields = json.loads(body)
+        if isinstance(fields, dict) and isinstance(fields.get("command"), str):
+            body = fields["command"]
+        elif isinstance(fields, dict) and isinstance(fields.get("file_path"), str) and len(fields) == 1:
+            body = fields["file_path"]
+    except Exception:
+        pass
+    body = body[:20_000]
     qid = f"{PREFIX}p-{request_id}"
     write_atomic(QUESTIONS_DIR, qid + ".json", {
         "id": qid, "kind": "permission", "live": True, "request_id": request_id,
         "tool": tool, "project": PROJECT, "title": permission_title(tool), "body": body,
+        "description": desc,
         "created": time.time(), "claude_pid": CLAUDE_PID, "session_id": "",
     })
+    replace_info_card(tool)
 
 
 def deliver(qid, question, answer):

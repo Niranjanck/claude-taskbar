@@ -55,6 +55,10 @@ Choose **Two-Way Sync with claude-tb…** in the menu bar icon once (it can add 
 
 Channels are a Claude Code research preview: Claude Code shows a warning about development channels on every start (choose "I am using this for local development"), and Team/Enterprise organizations must allow channels.
 
+### When channels are blocked: answer in the panel, terminal waits
+
+Organizations can turn channels off (Claude Code then says "blocked by org policy" when `claude-tb` starts), and then the panel can't share a prompt with the terminal. Choose **Answer Questions in Panel (Terminal Waits)** in the menu bar icon (`"blocking": true` in `config.json`): permission prompts get **Yes / No**, multiple-choice questions get their options, and questions at the end of a reply get a reply box. Claude Code waits for your answer; **Answer in terminal** hands the question back, and so does a timeout (10 minutes for permission prompts and multiple choice, 2 minutes for questions at the end of a reply, since a reply typed in the terminal waits for that) or quitting the panel. Press Esc in the terminal to stop waiting right away.
+
 ### Sessions started with plain `claude`
 
 Questions show as read-only cards with **Open Claude Code** (brings the terminal forward) and **Dismiss**.

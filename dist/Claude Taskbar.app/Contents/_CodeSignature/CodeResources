@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/channel_server.py</key>
 		<data>
-		eB4Ea83XtYmxhxaDzhLOsXkhL6w=
+		NWOkGxSv6vG7DENebiA3AipoRcw=
 		</data>
 		<key>Resources/chrome-extension/background.js</key>
 		<data>
@@ -18,7 +18,7 @@
 		</data>
 		<key>Resources/chrome-extension/content.js</key>
 		<data>
-		IYZTP8UV3fVAAaGdYicwHv8QV7k=
+		GAhl7QaedWpFBk1dHbB4NXCfIU4=
 		</data>
 		<key>Resources/chrome-extension/manifest.json</key>
 		<data>
@@ -26,7 +26,7 @@
 		</data>
 		<key>Resources/claude_hook.py</key>
 		<data>
-		Ernj7PNkZ3iSiZQ/2PWA+RQNgg4=
+		DPoT2gfAf7K7HiKMADkdTgKnCjk=
 		</data>
 		<key>Resources/install_hooks.py</key>
 		<data>
@@ -34,7 +34,7 @@
 		</data>
 		<key>Resources/web_bridge.py</key>
 		<data>
-		yF+xfpnxfpe1NbnNuoCmxKpNev8=
+		SwRAkcNSjiS3NEQrwgXfo+VzR1o=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -50,7 +50,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			r/Z2pS9LcinLbxofD5IQu5Y2ANKQZGQdNaoKqJvl57I=
+			tuE85mXZc4WM2fcmmJyNsSfbt7flvQ2roIVCCzlw2CE=
 			</data>
 		</dict>
 		<key>Resources/chrome-extension/background.js</key>
@@ -64,7 +64,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			jRi+CkX9ur1SB1f3Sq1ZI3t4Lk0nZJQeoXSkEpnaNsE=
+			eLOwSnagt6gDYKlIhwvZL3oGEBn6ATHfM1h4ipOT2wQ=
 			</data>
 		</dict>
 		<key>Resources/chrome-extension/manifest.json</key>
@@ -78,7 +78,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Ox/+APZRhsloj993BiacMaF7SXHO4dyE4z30EUjzU8w=
+			iM1yzEV1RyVKdMs7tojx1WqCAYeztGBk9bLnpqiD+/w=
 			</data>
 		</dict>
 		<key>Resources/install_hooks.py</key>
@@ -92,7 +92,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			0XmQrJuaavbS1HhtrMCDYiJteOHWm3m1Fw4pwj9mXJQ=
+			eByQTySUerCWxARyW7Bxowb/XPcx/sNde5YfpI2PXeU=
 			</data>
 		</dict>
 	</dict>

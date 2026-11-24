@@ -73,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Claude-Taskbar") != "1":
             return self.reply(403)
         length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > 16384:
+        if length <= 0 or length > 262_144:
             return self.reply(400)
         try:
             data = json.loads(self.rfile.read(length))
@@ -104,7 +104,7 @@ class Handler(BaseHTTPRequestHandler):
             "state": state if state in STATES else "idle",
             "title": str(data.get("title", ""))[:160],
             "url": url[:500],
-            "last": str(data.get("last", ""))[-1000:],
+            "last": str(data.get("last", ""))[-12_000:],
             "updated": time.time(),
         }
         tmp = path + ".tmp"

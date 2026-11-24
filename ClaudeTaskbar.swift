@@ -65,6 +65,7 @@ struct Question {
     let tabURL: String
     var live = false        // synced through the channel: the terminal can answer too
     var claudePid = 0
+    var summary = ""        // permission: the line Claude Code shows above the command
 }
 
 func readJSON(_ path: String) -> [String: Any]? {
@@ -132,6 +133,7 @@ func loadCodeQuestions() -> [Question] {
                          sessionId: str("session_id"), tabId: "", tabURL: "")
         q.live = (obj["live"] as? Bool) ?? false
         q.claudePid = (obj["claude_pid"] as? NSNumber)?.intValue ?? 0
+        q.summary = str("description")
         found.append(((obj["created"] as? NSNumber)?.doubleValue ?? 0, q))
     }
     return found.sorted { $0.0 < $1.0 }.map { $0.1 }
@@ -207,6 +209,126 @@ func makeWrappingLabel(_ text: String, size: CGFloat, weight: NSFont.Weight = .r
     l.translatesAutoresizingMaskIntoConstraints = false
     l.widthAnchor.constraint(equalToConstant: width).isActive = true
     return l
+}
+
+/// Claude's replies are Markdown: show bold, italics and code as formatting, not symbols.
+func styledText(_ text: String, font: NSFont, color: NSColor, markdown: Bool) -> NSAttributedString {
+    let plain = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
+    guard markdown, #available(macOS 12.0, *) else { return plain }
+    // Inline parsing keeps line breaks; drop heading marks it would leave behind.
+    let source = text.components(separatedBy: "\n").map { line -> String in
+        let t = line.drop { $0 == "#" }
+        return t.count < line.count && t.hasPrefix(" ") ? String(t.dropFirst()) : line
+    }.joined(separator: "\n")
+    let opts = AttributedString.MarkdownParsingOptions(
+        allowsExtendedAttributes: false, interpretedSyntax: .inlineOnlyPreservingWhitespace,
+        failurePolicy: .returnPartiallyParsedIfPossible)
+    guard let out = try? NSMutableAttributedString(markdown: source, options: opts, baseURL: nil) else { return plain }
+    let all = NSRange(location: 0, length: out.length)
+    out.removeAttribute(.link, range: all)
+    out.addAttributes([.font: font, .foregroundColor: color], range: all)
+    out.enumerateAttribute(.inlinePresentationIntent, in: all) { value, range, _ in
+        guard let raw = (value as? NSNumber)?.uintValue else { return }
+        let intent = InlinePresentationIntent(rawValue: raw)
+        if intent.contains(.code) {
+            out.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: font.pointSize - 0.5, weight: .regular), range: range)
+        } else if intent.contains(.stronglyEmphasized) {
+            out.addAttribute(.font, value: NSFont.systemFont(ofSize: font.pointSize, weight: .semibold), range: range)
+        } else if intent.contains(.emphasized) {
+            out.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask), range: range)
+        }
+    }
+    return out
+}
+
+/// Shows the top of a scroll view's content (AppKit can start a little scrolled).
+func scrollToTop(_ scroll: NSScrollView) {
+    scroll.automaticallyAdjustsContentInsets = false
+    scroll.contentInsets = NSEdgeInsetsZero
+    let top = { scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView) }
+    top()
+    DispatchQueue.main.async(execute: top)   // again after Auto Layout sizes it
+}
+
+/// The complete text in a box at most `maxHeight` tall; scroll inside it to read the rest.
+func makeScrollingText(_ text: String, size: CGFloat, color: NSColor = .labelColor, width: CGFloat,
+                       maxHeight: CGFloat, monospaced: Bool = false, markdown: Bool = false,
+                       attributed: NSAttributedString? = nil) -> NSView {
+    let font: NSFont = monospaced ? .monospacedSystemFont(ofSize: size, weight: .regular)
+                                  : .systemFont(ofSize: size)
+    let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 10))
+    tv.isEditable = false
+    tv.isSelectable = false          // the panel only takes the keyboard for text fields
+    tv.drawsBackground = false
+    tv.textContainerInset = .zero
+    tv.textContainer?.lineFragmentPadding = 0
+    tv.textContainer?.widthTracksTextView = true
+    tv.isVerticallyResizable = true
+    tv.isHorizontallyResizable = false
+    tv.autoresizingMask = [.width]
+    tv.textStorage?.setAttributedString(attributed ?? styledText(text, font: font, color: color, markdown: markdown))
+
+    func height(at w: CGFloat) -> CGFloat {
+        tv.setFrameSize(NSSize(width: w, height: 10))
+        tv.textContainer?.containerSize = NSSize(width: w, height: .greatestFiniteMagnitude)
+        guard let lm = tv.layoutManager, let tc = tv.textContainer else { return 0 }
+        lm.ensureLayout(for: tc)
+        return ceil(lm.usedRect(for: tc).height)
+    }
+
+    let scroll = NSScrollView()
+    scroll.drawsBackground = false
+    scroll.borderType = .noBorder
+    scroll.translatesAutoresizingMaskIntoConstraints = false
+    var h = height(at: width)
+    let overflows = h > maxHeight
+    if overflows {
+        // A permanent scroller shows there's more; the text wraps beside it.
+        scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .legacy
+        scroll.autohidesScrollers = false
+        h = height(at: width - NSScroller.scrollerWidth(for: .small, scrollerStyle: .legacy) - 4)
+        scroll.verticalScroller?.controlSize = .small
+    }
+    tv.setFrameSize(NSSize(width: tv.frame.width, height: max(h, 1)))
+    scroll.documentView = tv
+    scrollToTop(scroll)
+    NSLayoutConstraint.activate([
+        scroll.widthAnchor.constraint(equalToConstant: width),
+        scroll.heightAnchor.constraint(equalToConstant: max(1, min(h, maxHeight))),
+    ])
+    return scroll
+}
+
+/// A command or diff with its own line breaks, on a dark box like Claude Code's.
+/// Long lines wrap; tall content scrolls up and down.
+func makeCodeBox(_ text: String, width: CGFloat, maxHeight: CGFloat) -> NSView {
+    let pad: CGFloat = 8
+    let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    // Diff lines get the terminal's colors.
+    let styled = NSMutableAttributedString()
+    let lines = text.components(separatedBy: "\n")
+    for (i, line) in lines.enumerated() {
+        var color = NSColor.labelColor
+        if line.hasPrefix("+ ") { color = .systemGreen } else if line.hasPrefix("- ") { color = .systemRed }
+        styled.append(NSAttributedString(string: line + (i < lines.count - 1 ? "\n" : ""),
+                                         attributes: [.font: font, .foregroundColor: color]))
+    }
+    let scroll = makeScrollingText("", size: 11, width: width - pad * 2, maxHeight: maxHeight,
+                                   monospaced: true, attributed: styled)
+    let box = NSView()
+    box.wantsLayer = true
+    box.layer?.cornerRadius = 6
+    box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+    box.translatesAutoresizingMaskIntoConstraints = false
+    box.addSubview(scroll)
+    NSLayoutConstraint.activate([
+        box.widthAnchor.constraint(equalToConstant: width),
+        scroll.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: pad),
+        scroll.topAnchor.constraint(equalTo: box.topAnchor, constant: pad),
+        scroll.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -pad),
+    ])
+    return box
 }
 
 // MARK: - Logo
@@ -567,17 +689,26 @@ final class QuestionCard: NSView {
     // Permission prompt: Allow / Deny. Live cards are also open in the terminal;
     // blocking cards can be handed back to it.
     private func buildPermission() {
-        if !question.body.isEmpty {
-            content.addArrangedSubview(makeWrappingLabel(question.body, size: 11, width: innerWidth,
-                                                         maxLines: 8, monospaced: true))
-        }
+        addPermissionDetails()
         if question.live { hint("Also open in Claude Code. Whichever you answer first is used.") }
         content.addArrangedSubview(buttonRow([
-            button("Allow", #selector(allow), primary: true),
-            button("Deny", #selector(deny)),
+            button("Yes", #selector(allow), primary: true),
+            button("No", #selector(deny)),
             question.live ? button("Open Claude Code", #selector(openChat))
                           : button("Answer in terminal", #selector(terminal)),
         ]))
+    }
+
+    /// Laid out like Claude Code's prompt: summary, the command or change, then the question.
+    private func addPermissionDetails() {
+        if !question.summary.isEmpty {
+            content.addArrangedSubview(makeWrappingLabel(question.summary, size: 11.5, color: .secondaryLabelColor,
+                                                         width: innerWidth, maxLines: 3))
+        }
+        if !question.body.isEmpty {
+            content.addArrangedSubview(makeCodeBox(question.body, width: innerWidth, maxHeight: 190))
+        }
+        content.addArrangedSubview(makeLabel("Do you want to proceed?", size: 12, weight: .medium))
     }
 
     // View-only: this session isn't synced (or it's a multiple-choice question, which
@@ -585,30 +716,28 @@ final class QuestionCard: NSView {
     private func buildInfo() {
         switch question.kind {
         case "permission-info":
-            if !question.body.isEmpty {
-                content.addArrangedSubview(makeWrappingLabel(question.body, size: 11, width: innerWidth,
-                                                             maxLines: 8, monospaced: true))
-            }
+            addPermissionDetails()
         case "choice-info":
             for q in question.questions {
                 let text = (q["question"] as? String) ?? ""
                 content.addArrangedSubview(makeWrappingLabel(text, size: 12, weight: .medium, width: innerWidth))
                 let labels = ((q["options"] as? [[String: Any]]) ?? []).compactMap { $0["label"] as? String }
                 if !labels.isEmpty {
-                    content.addArrangedSubview(makeWrappingLabel(labels.map { "• " + $0 }.joined(separator: "\n"),
+                    content.addArrangedSubview(makeScrollingText(labels.map { "• " + $0 }.joined(separator: "\n"),
                                                                  size: 11.5, color: .secondaryLabelColor,
-                                                                 width: innerWidth, maxLines: 8))
+                                                                 width: innerWidth, maxHeight: 140))
                 }
             }
         default:
             if !question.body.isEmpty {
-                content.addArrangedSubview(makeWrappingLabel(question.body, size: 11.5, color: .secondaryLabelColor,
-                                                             width: innerWidth, maxLines: 10))
+                content.addArrangedSubview(makeScrollingText(question.body, size: 11.5, width: innerWidth, maxHeight: 220, markdown: true))
             }
         }
-        hint(question.kind == "choice-info"
-             ? "Pick your answer in Claude Code."
-             : "Answer in Claude Code. Start sessions with claude-tb to answer here too.")
+        switch question.kind {
+        case "choice-info": hint("Pick your answer in Claude Code.")
+        case "permission-info": hint("Answer Yes or No in Claude Code. Start sessions with claude-tb to answer here too.")
+        default: hint("Answer in Claude Code. Start sessions with claude-tb to answer here too.")
+        }
         content.addArrangedSubview(buttonRow([
             button("Open Claude Code", #selector(openChat), primary: true),
             button("Dismiss", #selector(dismiss)),
@@ -659,8 +788,7 @@ final class QuestionCard: NSView {
     // Claude ended its turn with a question: reply in a text field.
     private func buildReply() {
         if !question.body.isEmpty {
-            content.addArrangedSubview(makeWrappingLabel(question.body, size: 11.5, color: .secondaryLabelColor,
-                                                         width: innerWidth, maxLines: 10))
+            content.addArrangedSubview(makeScrollingText(question.body, size: 11.5, width: innerWidth, maxHeight: 220, markdown: true))
         }
         let f = field("Type your reply, then press Return")
         f.target = self
@@ -781,6 +909,19 @@ enum Setup {
         """
         try? script.write(toFile: launcher, atomically: true, encoding: .utf8)
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcher)
+    }
+
+    /// config.json "blocking": the panel takes questions and Claude Code waits for the answer.
+    /// The only way to answer here when channels are unavailable (e.g. blocked by the org).
+    static var blocking: Bool {
+        get { (readJSON(baseDir + "/config.json")?["blocking"] as? Bool) ?? false }
+        set {
+            var cfg = readJSON(baseDir + "/config.json") ?? [:]
+            cfg["blocking"] = newValue
+            if let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted]) {
+                try? data.write(to: URL(fileURLWithPath: baseDir + "/config.json"), options: .atomic)
+            }
+        }
     }
 
     static var launcherOnPath: Bool {
@@ -963,6 +1104,169 @@ final class BridgeRunner {
     }
 }
 
+// MARK: - Focusing a Claude Code session
+
+enum SessionFocus {
+    /// The terminal device of a process, like /dev/ttys003.
+    static func tty(of pid: Int) -> String {
+        guard pid > 0 else { return "" }
+        let t = Setup.run("/bin/ps", ["-o", "tty=", "-p", "\(pid)"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.hasPrefix("tty") ? "/dev/" + t : ""
+    }
+
+    /// Selects the Terminal or iTerm2 tab whose tty is the session's. False if not found.
+    static func selectTab(bundle: String, tty: String) -> Bool {
+        guard !tty.isEmpty, tty.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "/" }),
+              !NSRunningApplication.runningApplications(withBundleIdentifier: bundle).isEmpty else { return false }
+        let source: String
+        switch bundle {
+        case "com.apple.Terminal":
+            source = """
+            tell application id "com.apple.Terminal"
+              repeat with w in windows
+                repeat with t in tabs of w
+                  if tty of t is "\(tty)" then
+                    if miniaturized of w then set miniaturized of w to false
+                    set selected of t to true
+                    set index of w to 1
+                    activate
+                    return "ok"
+                  end if
+                end repeat
+              end repeat
+            end tell
+            return "miss"
+            """
+        case "com.googlecode.iterm2":
+            source = """
+            tell application id "com.googlecode.iterm2"
+              repeat with w in windows
+                repeat with t in tabs of w
+                  repeat with s in sessions of t
+                    if tty of s is "\(tty)" then
+                      select w
+                      select t
+                      select s
+                      activate
+                      return "ok"
+                    end if
+                  end repeat
+                end repeat
+              end repeat
+            end tell
+            return "miss"
+            """
+        default:
+            return false
+        }
+        var error: NSDictionary?
+        return NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue == "ok"
+    }
+
+    // MARK: Accessibility (Warp, VS Code, Cursor, Ghostty, ...)
+
+    static func attr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
+        var v: CFTypeRef?
+        return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
+    }
+
+    static func text(_ el: AXUIElement) -> String {
+        [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
+            .compactMap { attr(el, $0) as? String }.joined(separator: " ")
+    }
+
+    /// Asks once for Accessibility permission, which window switching needs.
+    static func trusted() -> Bool {
+        if AXIsProcessTrusted() { return true }
+        let d = UserDefaults.standard
+        guard !d.bool(forKey: "askedAccessibility") else { return false }
+        d.set(true, forKey: "askedAccessibility")
+        let answer = Setup.alert(
+            "Switch to the right window?",
+            "To bring forward the exact window (and, in Warp, the tab) of a Claude Code session, Claude Taskbar needs Accessibility access. macOS will open System Settings: turn on Claude Taskbar under Privacy & Security > Accessibility.\n\nWithout it, clicking a task just brings its app to the front.",
+            buttons: ["Open System Settings", "Not Now"])
+        if answer == .alertFirstButtonReturn {
+            let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        }
+        return false
+    }
+
+    static func raiseWindow(app: NSRunningApplication, bundle: String, item: TaskItem) {
+        guard trusted() else { return }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        let windows = (attr(axApp, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        // Most specific first: the session's title, then the project folder.
+        let needles = [item.title, item.project].map { $0.lowercased() }.filter { $0.count >= 3 }
+        let isWarp = bundle.hasPrefix("dev.warp.")
+        if isWarp { writeDebug(windows: windows, item: item) }
+
+        for needle in needles {
+            for w in windows where (attr(w, kAXTitleAttribute) as? String ?? "").lowercased().contains(needle) {
+                raise(w, app: app)
+                return
+            }
+        }
+        // Warp shows the active tab's title on the window; look for the session's tab inside.
+        if isWarp {
+            for w in windows {
+                if let tab = findTab(in: w, needles: needles) {
+                    raise(w, app: app)
+                    AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                    return
+                }
+            }
+        }
+    }
+
+    static func raise(_ w: AXUIElement, app: NSRunningApplication) {
+        if (attr(w, kAXMinimizedAttribute) as? Bool) == true {
+            AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        }
+        AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
+        app.activate()
+    }
+
+    /// A tab-like element (tab, radio button) whose label names the session.
+    static func findTab(in root: AXUIElement, needles: [String]) -> AXUIElement? {
+        var queue = [root], visited = 0
+        while !queue.isEmpty && visited < 1500 {
+            let el = queue.removeFirst()
+            visited += 1
+            let role = attr(el, kAXRoleAttribute) as? String ?? ""
+            if ["AXTab", "AXRadioButton", "AXTabButton"].contains(role) || attr(el, "AXSubrole") as? String == "AXTabButton" {
+                let label = text(el).lowercased()
+                if needles.contains(where: { label.contains($0) }) { return el }
+            }
+            queue += (attr(el, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        }
+        return nil
+    }
+
+    /// Temporary: records what Warp exposes, so tab switching can be tuned to it.
+    static func writeDebug(windows: [AXUIElement], item: TaskItem) {
+        var lines = ["session title: \(item.title)", "project: \(item.project)", "windows: \(windows.count)"]
+        for (i, w) in windows.enumerated() {
+            lines.append("window \(i): \(attr(w, kAXTitleAttribute) as? String ?? "")")
+            var queue: [(AXUIElement, Int)] = [(w, 0)], n = 0
+            while !queue.isEmpty && n < 300 {
+                let (el, depth) = queue.removeFirst()
+                n += 1
+                let role = attr(el, kAXRoleAttribute) as? String ?? ""
+                let sub = attr(el, "AXSubrole") as? String ?? ""
+                let label = text(el).replacingOccurrences(of: "\n", with: " ")
+                lines.append(String(repeating: "  ", count: depth + 1) + "\(role) \(sub) \(label.prefix(80))")
+                if depth < 6 {
+                    queue += ((attr(el, kAXChildrenAttribute) as? [AXUIElement]) ?? []).map { ($0, depth + 1) }
+                }
+            }
+        }
+        try? lines.joined(separator: "\n").write(toFile: baseDir + "/focus-debug.txt", atomically: true, encoding: .utf8)
+    }
+}
+
 // MARK: - Controller
 
 final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -971,6 +1275,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: EventHotKeyRef?
     private var connectItem: NSMenuItem!
     private var loginItem: NSMenuItem!
+    private var blockingItem: NSMenuItem!
     private var panel: KeyablePanel!
     private let stack = NSStackView()
     private let header = HeaderView(frame: .zero)
@@ -1099,6 +1404,9 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let sync = NSMenuItem(title: "Two-Way Sync with claude-tb…", action: #selector(setUpSync),
                               keyEquivalent: "")
         sync.target = self
+        blockingItem = NSMenuItem(title: "Answer Questions in Panel (Terminal Waits)",
+                                  action: #selector(toggleBlocking), keyEquivalent: "")
+        blockingItem.target = self
         loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         loginItem.target = self
         let about = NSMenuItem(title: "About Claude Taskbar", action: #selector(showAbout), keyEquivalent: "")
@@ -1109,6 +1417,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(restoreItem)
         menu.addItem(.separator())
         menu.addItem(connectItem)
+        menu.addItem(blockingItem)
         menu.addItem(sync)
         menu.addItem(chrome)
         if #available(macOS 13.0, *) { menu.addItem(loginItem) }
@@ -1123,6 +1432,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panelItem.title = panel.isVisible ? "Hide Panel" : "Show Panel"
         connectItem.title = Setup.hooksConnected ? "Disconnect from Claude Code" : "Connect to Claude Code"
         loginItem.state = Setup.opensAtLogin ? .on : .off
+        blockingItem.state = Setup.blocking ? .on : .off
     }
 
     @objc private func toggleConnect() {
@@ -1133,6 +1443,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setUpChrome() { Setup.setUpChromeExtension() }
 
     @objc private func setUpSync() { Setup.setUpTwoWaySync() }
+
+    @objc private func toggleBlocking() { Setup.blocking.toggle() }
 
     @objc private func toggleLogin() { Setup.setOpensAtLogin(!Setup.opensAtLogin) }
 
@@ -1162,7 +1474,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             questions.append(Question(
                 id: "web-\(item.id)-\(item.last.hashValue)", kind: "reply", source: "web",
                 title: item.title.isEmpty ? "Claude asked you something" : item.title,
-                body: String(item.last.suffix(700)), questions: [], sessionId: "",
+                body: item.last, questions: [], sessionId: "",
                 tabId: item.id, tabURL: item.url))
         }
         questions = questions.filter { !handled.contains($0.id) }
@@ -1256,8 +1568,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func resizePanel() {
         stack.layoutSubtreeIfNeeded()
-        let h = ceil(stack.fittingSize.height) + 6
+        var h = ceil(stack.fittingSize.height) + 6
         let top = panel.frame.maxY
+        // Long questions scroll inside their cards; never grow past the screen.
+        if let screen = panel.screen ?? NSScreen.main {
+            h = min(h, top - screen.visibleFrame.minY - 8)
+        }
         panel.setFrame(NSRect(x: panel.frame.minX, y: top - h, width: panelWidth, height: h), display: true)
     }
 
@@ -1398,9 +1714,15 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let bundle = !item.appBundle.isEmpty ? item.appBundle : (termBundles[item.term] ?? "")
         guard !bundle.isEmpty,
               let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { return }
+        // Terminal and iTerm2 can select the exact tab running this session.
+        if SessionFocus.selectTab(bundle: bundle, tty: SessionFocus.tty(of: item.pid)) { return }
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = true
-        NSWorkspace.shared.openApplication(at: appURL, configuration: cfg, completionHandler: nil)
+        NSWorkspace.shared.openApplication(at: appURL, configuration: cfg) { app, _ in
+            guard let app = app else { return }
+            // Other apps: bring forward the window showing this session (needs Accessibility).
+            DispatchQueue.main.async { SessionFocus.raiseWindow(app: app, bundle: bundle, item: item) }
+        }
     }
 
     /// Brings the existing Chrome tab forward; opens the chat in the default browser if it isn't found.

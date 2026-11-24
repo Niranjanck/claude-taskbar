@@ -33,6 +33,7 @@ ANSWERS_DIR = os.path.join(BASE, "answers")
 CHANNELS_DIR = os.path.join(BASE, "channels")
 ALIVE_FILE = os.path.join(BASE, "panel.alive")
 CONFIG_FILE = os.path.join(BASE, "config.json")
+MAX_BODY = 20_000   # the panel shows the full text in a scrolling box
 SHELLS = {"sh", "bash", "zsh", "dash", "fish", "env", "python3", "python"}
 DEFAULT_CONFIG = {
     "permissions": True,      # answer permission prompts in the panel
@@ -40,6 +41,9 @@ DEFAULT_CONFIG = {
     "replies": True,          # reply when Claude ends its turn with a question
     "timeout_seconds": 600,   # blocking mode: then hand the question back to the terminal
     "blocking": False,        # old behavior: Claude Code waits for the panel's answer
+    # Blocking mode, end-of-reply questions: you may well answer in the terminal instead,
+    # and Claude Code holds that until this wait ends, so keep it short.
+    "reply_timeout_seconds": 120,
 }
 
 
@@ -108,10 +112,14 @@ def pid_alive(pid):
 
 
 def synced_pid():
-    """The Claude Code pid if this session runs our channel (started with claude-tb), else None."""
+    """The Claude Code pid if this session's channel is known to work, else None.
+
+    Starting with claude-tb isn't proof: an organization can block channels, and then
+    Claude Code drops channel messages silently. The channel server marks itself
+    verified once Claude Code has relayed a permission prompt to it."""
     pid = claude_pid()
     marker = read_json(os.path.join(CHANNELS_DIR, f"{pid}.json"))
-    if isinstance(marker, dict) and pid_alive(marker.get("server_pid")):
+    if isinstance(marker, dict) and marker.get("verified") and pid_alive(marker.get("server_pid")):
         return pid
     return None
 
@@ -479,13 +487,34 @@ def permission_title(project, tool):
     return f"{project} wants to use {tool}"
 
 
+def permission_description(tool, inp):
+    """The one-line summary Claude Code shows above the command."""
+    inp = inp if isinstance(inp, dict) else {}
+    if tool == "Bash":
+        return " ".join(str(inp.get("description") or "").split())[:300]
+    if tool in ("Edit", "MultiEdit", "Write", "Read", "NotebookEdit"):
+        return str(inp.get("file_path") or inp.get("notebook_path") or "")[:300]
+    return ""
+
+
+def diff_lines(old, new):
+    return "\n".join(["- " + l for l in str(old).splitlines()] + ["+ " + l for l in str(new).splitlines()])
+
+
 def permission_body(tool, inp):
+    """What Claude Code shows in the box: the command exactly as written, or the change."""
     inp = inp if isinstance(inp, dict) else {}
     if tool == "Bash":
         body = str(inp.get("command", ""))
-        if inp.get("description"):
-            body = f"{inp['description']}\n\n{body}"
-    elif tool in ("Edit", "MultiEdit", "Write", "Read"):
+    elif tool == "Edit":
+        body = diff_lines(inp.get("old_string", ""), inp.get("new_string", ""))
+    elif tool == "MultiEdit":
+        edits = inp.get("edits") if isinstance(inp.get("edits"), list) else []
+        body = "\n\n".join(diff_lines(e.get("old_string", ""), e.get("new_string", ""))
+                            for e in edits if isinstance(e, dict))
+    elif tool == "Write":
+        body = str(inp.get("content", ""))
+    elif tool == "Read":
         body = str(inp.get("file_path", ""))
     elif tool == "NotebookEdit":
         body = str(inp.get("notebook_path", ""))
@@ -493,7 +522,7 @@ def permission_body(tool, inp):
         body = str(inp.get("url", ""))
     else:
         body = json.dumps(inp, ensure_ascii=False)
-    return body[:700]
+    return body[:MAX_BODY]
 
 
 def last_line_is_question(text):
@@ -546,12 +575,12 @@ def handle_ask(data):
             return
         update_status(data, state="waiting", detail="Needs your permission")
         title, body = permission_title(project, tool), permission_body(tool, inp)
-        if synced_pid():
-            return   # the channel shows a live card; the terminal shows its dialog too
+        desc = permission_description(tool, inp)
         if not blocking:
-            show_card(data, "permission-info", title, body, tool=tool)
+            # If this session has a working channel, it swaps this for a live Yes/No card.
+            show_card(data, "permission-info", title, body, tool=tool, description=desc)
             return
-        q = new_question(data, "permission", title, body, tool=tool)
+        q = new_question(data, "permission", title, body, tool=tool, description=desc)
         answer = ask_panel(q, timeout)
         action = (answer or {}).get("action")
         if action == "allow":
@@ -597,8 +626,8 @@ def handle_ask(data):
             return
         update_status(data, state="waiting", detail="Asked you a question")
         body = last.strip()
-        if len(body) > 900:
-            body = "…" + body[-900:]
+        if len(body) > MAX_BODY:
+            body = "…" + body[-MAX_BODY:]
         title = f"{project} is asking you"
         pid = synced_pid()
         if pid:
@@ -610,7 +639,8 @@ def handle_ask(data):
             show_card(data, "reply-info", title, body)
             return
         q = new_question(data, "reply", title, body)
-        answer = ask_panel(q, timeout)
+        reply_wait = max(10, min(int(cfg["reply_timeout_seconds"]), timeout))
+        answer = ask_panel(q, reply_wait)
         text = str((answer or {}).get("text") or "").strip()
         if answer and answer.get("action") == "reply" and text:
             update_status(data, state="running", detail="Working on your reply")

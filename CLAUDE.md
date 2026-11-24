@@ -48,6 +48,8 @@ Claude Code runs the PermissionRequest hook *before* showing its own prompt and 
 - Clearing cards answered in Claude Code (`clear_questions` in the hook): PostToolUse with the same tool name (allowed), UserPromptSubmit / Stop / SessionEnd (anything pending), Notification containing "waiting for your input" (a denied permission). Claude Code doesn't tell a channel when the terminal answered first, so the hooks do it.
 - Non-blocking cards carry `claude_pid` instead of `hook_pid`; the panel removes cards whose process is gone.
 - `config.json` `"blocking": true` restores the old behavior (panel takes the question, Claude Code waits, "Answer in terminal" hands it back, 600 s timeout).
+- Tested for real on 2026-11-24 in a Claude Team org: Claude Code printed "--dangerously-load-development-channels blocked by org policy" (channelsEnabled not set), plus "server:claude-taskbar · no MCP server configured with that name" (a server from `--mcp-config` may not count for `server:`; untested whether `.mcp.json` or user-scope config fixes it). Because a blocked channel drops messages silently, the hook always writes the read-only card and the channel only swaps it for a live card after Claude Code has relayed a prompt to it (`verified` in the channel marker); replies go through the channel only once verified.
+- Hooks run without a controlling terminal (checked in Warp and VS Code), so typing answers into the terminal with TIOCSTI is not possible.
 - Channels are a research preview. Custom channels need the development flag, which shows a warning screen on every start. Team/Enterprise orgs must enable channels (`channelsEnabled`). Docs: https://code.claude.com/docs/en/channels-reference
 
 ## Other behavior to preserve
