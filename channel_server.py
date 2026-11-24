@@ -22,6 +22,10 @@ import threading
 import time
 
 BASE = os.path.expanduser("~/.claude-taskbar")
+try:  # holds prompts, replies and commands: only this user may read it
+    os.makedirs(BASE, mode=0o700, exist_ok=True)
+except OSError:
+    pass
 QUESTIONS_DIR = os.path.join(BASE, "questions")
 ANSWERS_DIR = os.path.join(BASE, "answers")
 CHANNELS_DIR = os.path.join(BASE, "channels")

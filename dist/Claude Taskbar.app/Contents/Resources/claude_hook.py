@@ -27,6 +27,10 @@ import time
 import uuid
 
 BASE = os.path.expanduser("~/.claude-taskbar")
+try:  # holds prompts, replies and commands: only this user may read it
+    os.makedirs(BASE, mode=0o700, exist_ok=True)
+except OSError:
+    pass
 SESSIONS_DIR = os.path.join(BASE, "sessions")
 QUESTIONS_DIR = os.path.join(BASE, "questions")
 ANSWERS_DIR = os.path.join(BASE, "answers")
@@ -41,6 +45,9 @@ DEFAULT_CONFIG = {
     "replies": True,          # reply when Claude ends its turn with a question
     "timeout_seconds": 600,   # blocking mode: then hand the question back to the terminal
     "blocking": False,        # old behavior: Claude Code waits for the panel's answer
+    # Blocking mode, end-of-reply questions: you may well answer in the terminal instead,
+    # and Claude Code holds that until this wait ends, so keep it short.
+    "reply_timeout_seconds": 120,
 }
 
 
@@ -636,7 +643,8 @@ def handle_ask(data):
             show_card(data, "reply-info", title, body)
             return
         q = new_question(data, "reply", title, body)
-        answer = ask_panel(q, timeout)
+        reply_wait = max(10, min(int(cfg["reply_timeout_seconds"]), timeout))
+        answer = ask_panel(q, reply_wait)
         text = str((answer or {}).get("text") or "").strip()
         if answer and answer.get("action") == "reply" and text:
             update_status(data, state="running", detail="Working on your reply")

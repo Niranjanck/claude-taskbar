@@ -56,8 +56,23 @@ class Handler(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
-    def do_GET(self):
+    def allowed(self):
+        """Only the extension may talk to the bridge.
+
+        The custom header stops ordinary cross-origin pages (they'd need a CORS
+        preflight). The Host check stops DNS rebinding, where a web page makes its
+        own domain resolve to 127.0.0.1 and becomes "same-origin" with the bridge.
+        The Origin check rejects any web page that still gets through.
+        """
         if self.headers.get("X-Claude-Taskbar") != "1":
+            return False
+        if self.headers.get("Host") not in (f"127.0.0.1:{PORT}", f"localhost:{PORT}"):
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin.startswith("chrome-extension://")
+
+    def do_GET(self):
+        if not self.allowed():
             return self.reply(403)
         if self.path != "/wait":
             return self.reply(404)
@@ -70,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(204)
 
     def do_POST(self):
-        if self.headers.get("X-Claude-Taskbar") != "1":
+        if not self.allowed():
             return self.reply(403)
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > 262_144:
@@ -115,6 +130,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    os.makedirs(BASE, mode=0o700, exist_ok=True)
+    os.chmod(BASE, 0o700)  # holds prompts and replies; keep other users out
     for d in (WEB_DIR, OUT_DIR):
         os.makedirs(d, exist_ok=True)
         for name in os.listdir(d):  # tab ids don't survive a restart

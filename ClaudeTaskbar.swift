@@ -1184,7 +1184,7 @@ enum SessionFocus {
         d.set(true, forKey: "askedAccessibility")
         let answer = Setup.alert(
             "Switch to the right window?",
-            "To bring forward the exact window (and, in Warp, the tab) of a Claude Code session, Claude Taskbar needs Accessibility access. macOS will open System Settings: turn on Claude Taskbar under Privacy & Security > Accessibility.\n\nWithout it, clicking a task just brings its app to the front.",
+            "To bring forward the exact window and tab of a Claude Code session, Claude Taskbar needs Accessibility access. macOS will open System Settings: turn on Claude Taskbar under Privacy & Security > Accessibility.\n\nWithout it, clicking a task just brings its app to the front.",
             buttons: ["Open System Settings", "Not Now"])
         if answer == .alertFirstButtonReturn {
             let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
@@ -1199,23 +1199,19 @@ enum SessionFocus {
         let windows = (attr(axApp, kAXWindowsAttribute) as? [AXUIElement]) ?? []
         // Most specific first: the session's title, then the project folder.
         let needles = [item.title, item.project].map { $0.lowercased() }.filter { $0.count >= 3 }
-        let isWarp = bundle.hasPrefix("dev.warp.")
-        if isWarp { writeDebug(windows: windows, item: item) }
-
         for needle in needles {
             for w in windows where (attr(w, kAXTitleAttribute) as? String ?? "").lowercased().contains(needle) {
                 raise(w, app: app)
                 return
             }
         }
-        // Warp shows the active tab's title on the window; look for the session's tab inside.
-        if isWarp {
-            for w in windows {
-                if let tab = findTab(in: w, needles: needles) {
-                    raise(w, app: app)
-                    AXUIElementPerformAction(tab, kAXPressAction as CFString)
-                    return
-                }
+        // Tabbed apps (Warp, Ghostty, WezTerm, VS Code, ...) title the window after the
+        // active tab only; look for the session's tab inside each window.
+        for w in windows {
+            if let tab = findTab(in: w, needles: needles) {
+                raise(w, app: app)
+                AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                return
             }
         }
     }
@@ -1243,27 +1239,6 @@ enum SessionFocus {
             queue += (attr(el, kAXChildrenAttribute) as? [AXUIElement]) ?? []
         }
         return nil
-    }
-
-    /// Temporary: records what Warp exposes, so tab switching can be tuned to it.
-    static func writeDebug(windows: [AXUIElement], item: TaskItem) {
-        var lines = ["session title: \(item.title)", "project: \(item.project)", "windows: \(windows.count)"]
-        for (i, w) in windows.enumerated() {
-            lines.append("window \(i): \(attr(w, kAXTitleAttribute) as? String ?? "")")
-            var queue: [(AXUIElement, Int)] = [(w, 0)], n = 0
-            while !queue.isEmpty && n < 300 {
-                let (el, depth) = queue.removeFirst()
-                n += 1
-                let role = attr(el, kAXRoleAttribute) as? String ?? ""
-                let sub = attr(el, "AXSubrole") as? String ?? ""
-                let label = text(el).replacingOccurrences(of: "\n", with: " ")
-                lines.append(String(repeating: "  ", count: depth + 1) + "\(role) \(sub) \(label.prefix(80))")
-                if depth < 6 {
-                    queue += ((attr(el, kAXChildrenAttribute) as? [AXUIElement]) ?? []).map { ($0, depth + 1) }
-                }
-            }
-        }
-        try? lines.joined(separator: "\n").write(toFile: baseDir + "/focus-debug.txt", atomically: true, encoding: .utf8)
     }
 }
 
@@ -1300,9 +1275,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingSince = 0.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        quitOtherCopies()
         for d in [codeDir, webDir, questionsDir, answersDir, webOutDir, channelsDir] {
             try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
+        // The folder holds prompts, replies and commands; only this user may read it.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: baseDir)
         buildPanel()
         buildStatusItem()
         saveRemoved()
@@ -1321,6 +1299,22 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.bridge.start() }
         }
         DispatchQueue.main.async { Setup.firstRunIfNeeded() }
+    }
+
+    /// Only one copy runs: the one just opened replaces any other, wherever it lives
+    /// (an older version would also copy its older scripts over the current ones).
+    private func quitOtherCopies() {
+        let me = NSRunningApplication.current
+        var others = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "").filter { $0 != me }
+        // Builds can differ in bundle id across versions; also match the executable name.
+        others += NSWorkspace.shared.runningApplications.filter {
+            $0 != me && $0.executableURL?.lastPathComponent == "ClaudeTaskbar" && !others.contains($0)
+        }
+        for app in others {
+            app.terminate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if !app.isTerminated { app.forceTerminate() } }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -27,6 +27,10 @@ import time
 import uuid
 
 BASE = os.path.expanduser("~/.claude-taskbar")
+try:  # holds prompts, replies and commands: only this user may read it
+    os.makedirs(BASE, mode=0o700, exist_ok=True)
+except OSError:
+    pass
 SESSIONS_DIR = os.path.join(BASE, "sessions")
 QUESTIONS_DIR = os.path.join(BASE, "questions")
 ANSWERS_DIR = os.path.join(BASE, "answers")
