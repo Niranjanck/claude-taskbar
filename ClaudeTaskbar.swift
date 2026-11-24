@@ -368,6 +368,11 @@ final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+/// Lays out from the top, so a scrolled stack starts at its first item.
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 final class FirstMouseButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
@@ -651,6 +656,58 @@ final class QuestionCard: NSView {
         case "permission-info", "choice-info", "reply-info": buildInfo()
         default: buildReply()
         }
+        scrollMiddleIfTall()
+    }
+
+    /// A card taller than the screen allows (several multiple-choice questions, say) keeps
+    /// its title and buttons in view and scrolls everything between them.
+    private func scrollMiddleIfTall() {
+        let views = content.arrangedSubviews
+        guard views.count > 2 else { return }
+        let middle = Array(views[1..<(views.count - 1)])
+        let inner = NSStackView()
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = content.spacing
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        for v in middle {
+            content.removeArrangedSubview(v)
+            v.removeFromSuperview()
+            inner.addArrangedSubview(v)
+        }
+        let height = inner.fittingSize.height
+        let screenHeight = NSScreen.main?.visibleFrame.height ?? 800
+        let limit = max(220, min(520, screenHeight - 320))
+        guard height > limit else {
+            content.insertArrangedSubview(inner, at: 1)
+            return
+        }
+        let doc = FlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(inner)
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = doc
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            inner.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            inner.topAnchor.constraint(equalTo: doc.topAnchor),
+            inner.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -4),
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            doc.widthAnchor.constraint(equalToConstant: innerWidth),
+            scroll.widthAnchor.constraint(equalToConstant: innerWidth),
+            scroll.heightAnchor.constraint(equalToConstant: limit),
+        ])
+        content.insertArrangedSubview(scroll, at: 1)
+        let more = makeLabel("Scroll inside the card for more ↓", size: 10.5, color: .secondaryLabelColor)
+        content.insertArrangedSubview(more, at: 2)
+        DispatchQueue.main.async { scroll.flashScrollers() }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
