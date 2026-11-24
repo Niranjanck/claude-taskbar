@@ -15,9 +15,12 @@ Claude Taskbar is a regular Mac app. On a Mac with the Xcode Command Line Tools:
 bash build-app.sh
 ```
 
-This builds `dist/Claude Taskbar.app` for both Apple silicon and Intel Macs, and packs it into `dist/Claude-Taskbar-1.0.0.dmg`. That disk image is the file you share. It contains the app, a shortcut to Applications, and a "Read Me First" for the person installing it (the same text as `INSTALL.txt`).
+This builds `dist/Claude Taskbar.app` for both Apple silicon and Intel Macs, and packs it two ways:
 
-To set the version number: `VERSION=1.1.0 bash build-app.sh`.
+- `dist/Claude-Taskbar-1.1.0.dmg`: the file you share. It contains the app, a shortcut to Applications, and a "Read Me First" for the person installing it (the same text as `INSTALL.txt`).
+- `dist/Claude-Taskbar-1.1.0.pkg`: an installer that puts the app in /Applications, for deploying through MDM. Set `INSTALLER_ID="Developer ID Installer: Your Company (TEAMID)"` to sign it.
+
+To set the version number: `VERSION=1.2.0 bash build-app.sh`.
 
 ### Opening without a security warning
 

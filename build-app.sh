@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds "Claude Taskbar.app" and a shareable .dmg in ./dist
+# Builds "Claude Taskbar.app", a shareable .dmg and an installer .pkg (for MDM) in ./dist
 #
 #   bash build-app.sh
 #
@@ -9,15 +9,19 @@
 #   DEVELOPER_ID="Developer ID Application: Your Company (TEAMID)" \
 #   NOTARY_PROFILE="claude-taskbar" bash build-app.sh
 #
+# To sign the .pkg too (needed by some MDM setups), add
+#   INSTALLER_ID="Developer ID Installer: Your Company (TEAMID)"
+#
 # Create the notary profile once with:
 #   xcrun notarytool store-credentials claude-taskbar --apple-id you@example.com --team-id TEAMID
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.1.0}"
 OUT="$SRC/dist"
 APP="$OUT/Claude Taskbar.app"
 DMG="$OUT/Claude-Taskbar-$VERSION.dmg"
+PKG="$OUT/Claude-Taskbar-$VERSION.pkg"
 
 command -v swiftc >/dev/null || { echo "Install the Xcode Command Line Tools first: xcode-select --install"; exit 1; }
 
@@ -33,6 +37,7 @@ rm "$OUT/arm64" "$OUT/x86_64"
 cp "$SRC/AppIcon.icns" "$SRC/claude_hook.py" "$SRC/web_bridge.py" "$SRC/install_hooks.py" "$SRC/channel_server.py" "$APP/Contents/Resources/"
 cp -R "$SRC/chrome-extension" "$APP/Contents/Resources/chrome-extension"
 find "$APP" -name '__pycache__' -prune -exec rm -rf {} +
+xattr -cr "$APP"   # stray attributes break the signature and end up as ._ files in the .pkg
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -83,5 +88,29 @@ if [ -n "${DEVELOPER_ID:-}" ]; then
   fi
 fi
 
+echo "Making the installer package..."
+# Installs to /Applications for every user. Not relocatable: macOS would otherwise
+# "upgrade" a stray copy of the app found elsewhere (in dist/, say) instead.
+PKGROOT="$OUT/pkgroot"
+mkdir -p "$PKGROOT"
+ditto --norsrc --noextattr --noacl "$APP" "$PKGROOT/$(basename "$APP")"
+export COPYFILE_DISABLE=1
+COMPONENTS="$OUT/components.plist"
+pkgbuild --analyze --root "$PKGROOT" "$COMPONENTS" >/dev/null
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENTS"
+SIGN_PKG=()
+[ -n "${INSTALLER_ID:-}" ] && SIGN_PKG=(--sign "$INSTALLER_ID" --timestamp)
+pkgbuild --quiet --root "$PKGROOT" --component-plist "$COMPONENTS" \
+  --identifier com.claudetaskbar.app --version "$VERSION" \
+  --install-location /Applications ${SIGN_PKG[@]+"${SIGN_PKG[@]}"} "$PKG"
+rm -rf "$PKGROOT" "$COMPONENTS"
+if [ -n "${INSTALLER_ID:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
+  echo "Notarizing the package..."
+  xcrun notarytool submit "$PKG" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$PKG"
+fi
+
 echo
-echo "Done: $DMG"
+echo "Done:"
+echo "  $DMG"
+echo "  $PKG"

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Taskbar Bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Reports the state of open claude.ai chats to the Claude Taskbar widget on this Mac.",
   "host_permissions": ["http://127.0.0.1:47823/*"],
   "background": { "service_worker": "background.js" },
