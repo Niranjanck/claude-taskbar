@@ -15,6 +15,7 @@ Claude Code never waits on the panel (unless config.json has "blocking": true):
   - Other sessions get view-only cards with an "Open Claude Code" button.
 Nothing is printed except the decision JSON Claude Code reads.
 """
+import fcntl
 import json
 import os
 import re
@@ -231,12 +232,75 @@ def refresh_title(data, rec, full=False):
         rec["title_src"] = "prompt"
 
 
+# ---------- subagents ----------
+#
+# SubagentStart / SubagentStop carry agent_id and agent_type, and tool events fired
+# inside a subagent carry its agent_id too, so a missed start is picked up from the
+# subagent's next tool call and a missed stop expires after a quiet spell.
+
+AGENT_TOOLS = ("Agent", "Task")
+AGENT_QUIET_LIMIT = 20 * 60
+
+
+def track_agents(data, rec):
+    event = data.get("hook_event_name", "")
+    now = time.time()
+    agents = rec.get("agents") if isinstance(rec.get("agents"), dict) else {}
+    queue = rec.get("agent_queue") if isinstance(rec.get("agent_queue"), list) else []
+    aid = str(data.get("agent_id") or "")
+    atype = str(data.get("agent_type") or "")
+
+    # The Agent tool's description names the subagent's job; SubagentStart doesn't.
+    if event == "PreToolUse" and data.get("tool_name") in AGENT_TOOLS:
+        inp = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+        queue = (queue + [" ".join(str(inp.get("description") or "").split())[:60]])[-20:]
+
+    if event == "SubagentStart":
+        if aid and atype:   # internal helper agents have no type; don't count them
+            desc = (agents.get(aid) or {}).get("desc") or (queue.pop(0) if queue else "") or atype
+            agents[aid] = {"type": atype, "desc": desc, "seen": now}
+    elif event == "SubagentStop":
+        agents.pop(aid, None)
+    elif aid in agents:
+        agents[aid]["seen"] = now
+    elif aid and atype and event in ("PreToolUse", "PostToolUse"):
+        agents[aid] = {"type": atype, "desc": atype, "seen": now}
+
+    if event == "Stop" and not aid:
+        # Foreground subagents are done when the turn ends; background ones are listed.
+        bg = data.get("background_tasks")
+        listed = json.dumps(bg) if bg else ""
+        agents = {k: v for k, v in agents.items() if k in listed}
+
+    agents = {k: v for k, v in agents.items() if now - float(v.get("seen") or 0) < AGENT_QUIET_LIMIT}
+    rec["agents"] = agents
+    rec["agent_queue"] = queue
+
+    waiting_note = "subagent" in str(rec.get("detail") or "") and "still working" in str(rec.get("detail") or "")
+    if agents and event == "Stop":
+        n = len(agents)
+        rec["state"] = "running"
+        rec["detail"] = f"{n} subagent{'s' if n != 1 else ''} still working"
+    elif not agents and event == "SubagentStop" and waiting_note:
+        rec["state"] = "done"
+        rec["detail"] = "Finished"
+
+
 # ---------- session status ----------
 
 def update_status(data, **fields):
     sid = str(data.get("session_id") or "")
     if not sid or "/" in sid:
         return
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    # Hooks for one session run in parallel (several subagents at once), so the
+    # read-modify-write of its record is serialized.
+    with open(os.path.join(SESSIONS_DIR, sid + ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _update_status(data, sid, fields)
+
+
+def _update_status(data, sid, fields):
     path = os.path.join(SESSIONS_DIR, sid + ".json")
     rec = read_json(path) or {}
     now = time.time()
@@ -260,6 +324,7 @@ def update_status(data, **fields):
     rec.update(fields)
     if scan:
         refresh_title(data, rec, full=(scan == "full" and rec.get("title_src") in (None, "prompt")))
+    track_agents(data, rec)
     write_atomic(SESSIONS_DIR, sid + ".json", rec)
 
 
@@ -324,10 +389,11 @@ def record(data):
         clear_questions(data)   # e.g. a permission you denied in the terminal
 
     if event == "SessionEnd":
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+        for p in (path, os.path.join(SESSIONS_DIR, sid + ".lock")):
+            try:
+                os.remove(p)
+            except FileNotFoundError:
+                pass
         return
     current = read_json(path) or {}
 
@@ -352,6 +418,8 @@ def record(data):
             update_status(data, _scan="tail")
     elif event == "Stop":
         update_status(data, state="done", detail="Finished", _scan="full")
+    elif event in ("SubagentStart", "SubagentStop"):
+        update_status(data)
 
 
 # ---------- asking the panel ----------

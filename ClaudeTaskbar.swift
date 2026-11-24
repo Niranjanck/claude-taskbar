@@ -48,6 +48,7 @@ struct TaskItem {
     let promptCount: Int    // goes up with every prompt; brings back a removed task
     let updated: Double
     let pid: Int            // the Claude Code process
+    let agents: [String]    // what each running subagent is doing
 }
 
 struct Question {
@@ -94,8 +95,13 @@ func loadItems(dir: String, source: String, maxAge: Double) -> [TaskItem] {
         // without sending SessionEnd (closed terminal window, crash, etc.).
         if now - updated > maxAge || processGone(obj, key: "pid") {
             try? fm.removeItem(atPath: path)
+            try? fm.removeItem(atPath: String(path.dropLast(5)) + ".lock")
             continue
         }
+        let agentInfo = (obj["agents"] as? [String: [String: Any]]) ?? [:]
+        let agents = agentInfo.values
+            .sorted { (($0["seen"] as? NSNumber)?.doubleValue ?? 0) < (($1["seen"] as? NSNumber)?.doubleValue ?? 0) }
+            .map { ($0["desc"] as? String) ?? (($0["type"] as? String) ?? "Subagent") }
         let str: (String) -> String = { (obj[$0] as? String) ?? "" }
         let state = str("state")
         out.append(TaskItem(
@@ -103,7 +109,7 @@ func loadItems(dir: String, source: String, maxAge: Double) -> [TaskItem] {
             title: str("title"), prompt: str("prompt"), detail: str("detail"), project: str("project"),
             appBundle: str("app_bundle"), term: str("term"), url: str("url"),
             last: str("last"), promptCount: (obj["prompt_count"] as? NSNumber)?.intValue ?? 0,
-            updated: updated, pid: (obj["pid"] as? NSNumber)?.intValue ?? 0))
+            updated: updated, pid: (obj["pid"] as? NSNumber)?.intValue ?? 0, agents: agents))
     }
     return out
 }
@@ -268,6 +274,9 @@ final class RowView: ClickableView {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         toolTip = item.prompt.isEmpty ? item.title : item.prompt
+        if !item.agents.isEmpty {
+            toolTip = (toolTip ?? "") + "\n\nSubagents:\n" + item.agents.map { "• " + $0 }.joined(separator: "\n")
+        }
 
         let dot = NSView()
         dot.wantsLayer = true
@@ -298,8 +307,11 @@ final class RowView: ClickableView {
 
         let place = item.source == "code" ? (item.project.isEmpty ? "Claude Code" : item.project) : "claude.ai"
         let what = item.detail.isEmpty ? stateText(item.state) : item.detail
-        let para = makeLabel("\(place): \(what)", size: 11,
+        let n = item.agents.count
+        let subagents = n == 0 ? "" : " · \(n) subagent\(n == 1 ? "" : "s")"
+        let para = makeLabel("\(place): \(what)\(subagents)", size: 11,
                              color: item.state == "waiting" ? .systemOrange : .tertiaryLabelColor)
+        para.lineBreakMode = .byTruncatingMiddle   // keep the subagent count visible
 
         let lines = NSStackView()
         lines.orientation = .vertical
@@ -998,6 +1010,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Setup.removeOldLaunchAgents()
         if Setup.hasCommandLineTools() {
             Setup.installScripts()
+            // Picks up hooks added in newer versions; writes nothing when already current.
+            if Setup.hooksConnected { Setup.run(python, [Setup.resources + "/install_hooks.py"]) }
             // A moment's wait lets an old bridge from launchd release its port.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.bridge.start() }
         }
@@ -1221,7 +1235,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateRows(_ items: [TaskItem]) -> Bool {
         let sig = "\(collapsed)\n" + items.map {
-            "\($0.id)|\($0.state)|\($0.title)|\($0.prompt)|\($0.detail)|\(ageText($0.updated))"
+            "\($0.id)|\($0.state)|\($0.title)|\($0.prompt)|\($0.detail)|\(ageText($0.updated))|\($0.agents)"
         }.joined(separator: "\n")
         guard sig != rowsSignature else { return false }
         rowsSignature = sig

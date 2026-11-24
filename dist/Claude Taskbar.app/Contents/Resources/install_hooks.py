@@ -2,7 +2,8 @@
 """Add (or with --remove, take out) the Claude Taskbar hooks in ~/.claude/settings.json.
 
 Keeps every other setting and hook you already have, and writes a timestamped
-backup before changing anything. Safe to run more than once.
+backup before changing anything. Safe to run more than once: when the hooks are
+already up to date, nothing is written (the app runs this on every launch).
 """
 import json
 import os
@@ -31,6 +32,8 @@ OURS = {
     "PermissionRequest": [group(ASK, ASK_TIMEOUT, "*")],
     "Notification": [group(STATUS, 5)],
     "Stop": [group(ASK, ASK_TIMEOUT)],
+    "SubagentStart": [group(STATUS, 5)],
+    "SubagentStop": [group(STATUS, 5)],
     "SessionEnd": [group(STATUS, 5)],
 }
 
@@ -54,9 +57,7 @@ def main():
     if os.path.exists(SETTINGS):
         with open(SETTINGS) as f:
             settings = json.load(f)
-        backup = f"{SETTINGS}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
-        shutil.copy2(SETTINGS, backup)
-        print(f"Backed up settings to {backup}")
+    original = json.dumps(settings, sort_keys=True)
 
     hooks = settings.setdefault("hooks", {})
     for event in set(hooks) | set(OURS):
@@ -70,6 +71,13 @@ def main():
     if not hooks:
         settings.pop("hooks", None)
 
+    if json.dumps(settings, sort_keys=True) == original:
+        print("Hooks already up to date.")
+        return
+    if os.path.exists(SETTINGS):
+        backup = f"{SETTINGS}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+        shutil.copy2(SETTINGS, backup)
+        print(f"Backed up settings to {backup}")
     with open(SETTINGS, "w") as f:
         json.dump(settings, f, indent=2)
         f.write("\n")

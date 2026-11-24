@@ -90,6 +90,7 @@ Set any of the first three to `false` to keep that kind of question in the termi
 | Green | Claude finished its reply |
 | Grey | Idle |
 
+- **Subagents:** a Claude Code row shows how many subagents are working on that task (for example "· 3 subagents"); hover over the row to see what each one is doing. A task whose turn has ended stays blue while background subagents are still running.
 - **Click a Claude Code row** to bring its terminal or editor app to the front.
 - **Click a claude.ai row** to switch to that Chrome tab. macOS asks once for permission to control Chrome.
 - **Drag the header** to move the panel; **click the header** to collapse the task list. Question cards stay visible when it's collapsed.
