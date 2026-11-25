@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-1.3.0}"
+VERSION="${VERSION:-1.3.1}"
 OUT="$SRC/dist"
 APP="$OUT/Claude Taskbar.app"
 DMG="$OUT/Claude-Taskbar-$VERSION.dmg"
