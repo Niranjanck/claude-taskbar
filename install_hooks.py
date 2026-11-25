@@ -16,6 +16,8 @@ HOOK = os.path.expanduser("~/.claude-taskbar/claude_hook.py")
 MARKER = "/.claude-taskbar/claude_hook.py"
 STATUS = f'"{sys.executable}" "{HOOK}"'
 ASK = f'"{sys.executable}" "{HOOK}" --ask'
+STATUSLINE = f'"{sys.executable}" "{os.path.expanduser("~/.claude-taskbar/statusline.py")}"'
+MARKER_STATUS = "/.claude-taskbar/statusline.py"
 ASK_TIMEOUT = 900  # seconds; the hook itself hands back to the terminal sooner
 
 
@@ -70,6 +72,15 @@ def main():
             hooks.pop(event, None)
     if not hooks:
         settings.pop("hooks", None)
+
+    # Status line: the only place Claude Code shares plan usage (rate_limits). Added only
+    # when you have none, and removed only if it's ours.
+    ours = MARKER_STATUS in str((settings.get("statusLine") or {}).get("command", ""))
+    if remove:
+        if ours:
+            settings.pop("statusLine", None)
+    elif not settings.get("statusLine"):
+        settings["statusLine"] = {"type": "command", "command": STATUSLINE, "padding": 0}
 
     if json.dumps(settings, sort_keys=True) == original:
         print("Hooks already up to date.")

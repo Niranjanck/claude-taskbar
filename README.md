@@ -97,6 +97,7 @@ Set any of the first three to `false` to keep that kind of question in the termi
 | Green | Claude finished its reply |
 | Grey | Idle |
 
+- **Plan usage:** the bottom of the panel shows how much of your plan's current session (5-hour) limit is used, as a bar with the reset time, plus the weekly limit underneath — the same numbers as Claude Code's `/usage`. Claude Code shares them only with a status line command, so Claude Taskbar adds one (`statusline.py`, showing the model and these percentages) if you don't already have a status line; it never replaces yours, and Disconnect removes it. The bar appears after a Claude Code session has drawn its status line, and only for plans that report usage.
 - **Subagents:** a Claude Code row shows how many subagents are working on that task (for example "· 3 subagents"); hover over the row to see what each one is doing. A task whose turn has ended stays blue while background subagents are still running.
 - **Click a Claude Code row** to bring its terminal or editor app to the front.
 - **Click a claude.ai row** to switch to that Chrome tab. macOS asks once for permission to control Chrome.

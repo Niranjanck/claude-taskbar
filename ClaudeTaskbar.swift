@@ -932,7 +932,7 @@ enum Setup {
     static func installScripts() {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: baseDir, withIntermediateDirectories: true)
-        for name in ["claude_hook.py", "channel_server.py", "panel_link.py", "native_host.py"] {
+        for name in ["claude_hook.py", "channel_server.py", "panel_link.py", "native_host.py", "statusline.py"] {
             let src = resources + "/" + name, dst = baseDir + "/" + name
             guard fm.fileExists(atPath: src) else { continue }
             try? fm.removeItem(atPath: dst)
@@ -1252,6 +1252,117 @@ final class AnswerServer {
     }
 }
 
+// MARK: - Plan usage footer
+
+let usageFile = baseDir + "/usage.json"
+
+/// A thin rounded bar; blue, then orange past 70%, red past 90%.
+final class UsageBar: NSView {
+    var fraction: CGFloat = 0 { didSet { needsDisplay = true } }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 6) }
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
+        NSColor.labelColor.withAlphaComponent(0.12).setFill()
+        track.fill()
+        let f = max(0, min(1, fraction))
+        guard f > 0 else { return }
+        let color: NSColor = f >= 0.9 ? .systemRed : f >= 0.7 ? .systemOrange : .controlAccentColor
+        color.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: max(6, bounds.width * f), height: bounds.height),
+                     xRadius: 3, yRadius: 3).fill()
+    }
+}
+
+/// The bottom of the panel: how much of the plan's current session (5-hour) limit is used,
+/// and the weekly limit. Claude Code shares these only with its status line command, which
+/// statusline.py saves to usage.json.
+final class UsageFooter: NSView {
+    private let title = makeLabel("Current session", size: 11, weight: .medium, color: .secondaryLabelColor)
+    private let value = makeLabel("", size: 11, color: .secondaryLabelColor)
+    private let bar = UsageBar()
+    private let week = makeLabel("", size: 10.5, color: .tertiaryLabelColor)
+    private var signature = ""
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        value.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let rule = NSBox()
+        rule.boxType = .separator
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        for v in [rule, title, value, bar, week] { addSubview(v) }
+        NSLayoutConstraint.activate([
+            rule.topAnchor.constraint(equalTo: topAnchor),
+            rule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            rule.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            title.topAnchor.constraint(equalTo: rule.bottomAnchor, constant: 7),
+            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            value.firstBaselineAnchor.constraint(equalTo: title.firstBaselineAnchor),
+            value.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            value.leadingAnchor.constraint(greaterThanOrEqualTo: title.trailingAnchor, constant: 8),
+            bar.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 5),
+            bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            bar.heightAnchor.constraint(equalToConstant: 6),
+            week.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 5),
+            week.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            week.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            week.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+        ])
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private static func resetText(_ epoch: Double) -> String {
+        let date = Date(timeIntervalSince1970: epoch)
+        let f = DateFormatter()
+        f.dateFormat = Calendar.current.isDateInToday(date) ? "h:mm a"
+                     : (date.timeIntervalSinceNow < 6 * 86400 ? "EEE h:mm a" : "MMM d")
+        return f.string(from: date)
+    }
+
+    /// (percent used, reset time) for a window, or nil. A window past its reset counts as 0%.
+    private static func window(_ limits: [String: Any], _ key: String) -> (Double, Double)? {
+        guard let w = limits[key] as? [String: Any],
+              let used = (w["used_percentage"] as? NSNumber)?.doubleValue else { return nil }
+        let resets = (w["resets_at"] as? NSNumber)?.doubleValue ?? 0
+        return (resets > 0 && resets < Date().timeIntervalSince1970) ? (0, 0) : (used, resets)
+    }
+
+    /// Reads usage.json; returns true when the footer's size or visibility changed.
+    func update() -> Bool {
+        let limits = (readJSON(usageFile)?["rate_limits"] as? [String: Any]) ?? [:]
+        let session = UsageFooter.window(limits, "five_hour")
+        let weekly = UsageFooter.window(limits, "seven_day")
+        let sig = "\(String(describing: session))|\(String(describing: weekly))|\(Int(Date().timeIntervalSince1970 / 60))"
+        guard sig != signature else { return false }
+        signature = sig
+        let wasHidden = isHidden
+        // The bar shows the current session; without one (not reported yet), the week.
+        guard let (used, resets) = session ?? weekly else {
+            isHidden = true
+            return !wasHidden
+        }
+        isHidden = false
+        title.stringValue = session != nil ? "Current session" : "This week"
+        bar.fraction = CGFloat(used / 100)
+        value.stringValue = resets > 0 ? "\(Int(used.rounded()))% · resets \(UsageFooter.resetText(resets))"
+                                       : "\(Int(used.rounded()))%"
+        value.textColor = used >= 90 ? .systemRed : used >= 70 ? .systemOrange : .secondaryLabelColor
+        toolTip = "Plan usage reported by Claude Code (same as /usage). Updates whenever a Claude Code session redraws its status line."
+        if session != nil, let (wUsed, wResets) = weekly {
+            week.stringValue = "This week: \(Int(wUsed.rounded()))% used" + (wResets > 0 ? " · resets \(UsageFooter.resetText(wResets))" : "")
+            week.isHidden = false
+        } else {
+            week.stringValue = ""
+            week.isHidden = true
+        }
+        return wasHidden
+    }
+}
+
 // MARK: - Focusing a Claude Code session
 
 enum SessionFocus {
@@ -1404,6 +1515,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let header = HeaderView(frame: .zero)
     private let cardsStack = NSStackView()
     private let rowsStack = NSStackView()
+    private let usageFooter = UsageFooter(frame: .zero)
     private var statusItem: NSStatusItem!
     private var collapsed = UserDefaults.standard.bool(forKey: "collapsed")
     private var timer: Timer?
@@ -1503,7 +1615,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             stack.topAnchor.constraint(equalTo: fx.topAnchor, constant: 2),
             stack.widthAnchor.constraint(equalToConstant: panelWidth),
         ])
-        for v in [header, cardsStack, rowsStack] as [NSView] { add(v, to: stack) }
+        for v in [header, cardsStack, rowsStack, usageFooter] as [NSView] { add(v, to: stack) }
 
         header.onClick = { [weak self] in self?.toggleCollapsed() }
         header.onMinimize = { [weak self] in self?.hidePanel() }
@@ -1651,7 +1763,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let cardsChanged = updateCards(questions)
         let rowsChanged = updateRows(items)
-        if cardsChanged || rowsChanged { resizePanel() }
+        let usageChanged = usageFooter.update()
+        if cardsChanged || rowsChanged || usageChanged { resizePanel() }
     }
 
     /// Adds new question cards and removes answered ones, keeping the rest as they are

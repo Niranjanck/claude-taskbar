@@ -30,7 +30,7 @@
 		</data>
 		<key>Resources/install_hooks.py</key>
 		<data>
-		izabF2qG3Q2el+dIK/gmWJS10io=
+		CLxmfDmXSzjS1tPDtV0o4zTkt8k=
 		</data>
 		<key>Resources/native_host.py</key>
 		<data>
@@ -39,6 +39,10 @@
 		<key>Resources/panel_link.py</key>
 		<data>
 		7rnAzGq2yZVDMg7BrAS9ikPN2MI=
+		</data>
+		<key>Resources/statusline.py</key>
+		<data>
+		5ji6eObe1goQYaW4pSX9RPvZ70I=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -89,7 +93,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			naY/h8Tn6krgVWCPVMYvHLOC+halZ6n+KjCdpioDTig=
+			QpyIrIOe55UMDPk/y8Iy1G/5nNvxULFkjE6JiO+yyuc=
 			</data>
 		</dict>
 		<key>Resources/native_host.py</key>
@@ -104,6 +108,13 @@
 			<key>hash2</key>
 			<data>
 			3MeAuSqTqdoixEasu8aA5A6yGFyZ7UAukOJesGCVFe4=
+			</data>
+		</dict>
+		<key>Resources/statusline.py</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			BKBWsdWYLtt/+DsIB81u3R+BsLi7HiEQKW8ZDlj5+5M=
 			</data>
 		</dict>
 	</dict>
