@@ -38,7 +38,7 @@ Writes are atomic (temp file + rename). Ids are validated before use as file nam
 - `panel_link.py`: client side of `panel.sock` with the peer check; used by the hook, channel server and native host.
 - `native_host.py`, `chrome-extension/`: claude.ai tab status and replies over Chrome native messaging (`com.claudetaskbar.bridge`, manifest in `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`, `allowed_origins` = the extension only). The manifest's `key` fixes the extension ID to `hdlholpbfnbghdhgbdaafdjfnnickejb`; don't change it. Only `https://claude.ai/` URLs are accepted. Replaced the localhost HTTP bridge (`web_bridge.py`, port 47823) in 1.2.0, which any local process or other account could reach.
 - `build-app.sh`: universal (arm64 + x86_64) app bundle in `dist/`, ad-hoc signed unless `DEVELOPER_ID` is set, plus a `.dmg` and a `.pkg` (non-relocatable, installs to /Applications). `VERSION`, `INSTALLER_ID`, `NOTARY_PROFILE` env vars.
-- `site/`: static landing page for Cloudflare Pages (project `claude-task-tracker`, https://claude-task-tracker.pages.dev). Styled after Claude's design (ivory, warm grays, serif headings, dark buttons). Download buttons point to `Claude-Taskbar-1.2.0.dmg` in the same folder.
+- `site/`: static landing page for Cloudflare Pages (project `claude-task-tracker`, https://claude-task-tracker.pages.dev). Styled after Claude's design (ivory, warm grays, serif headings, dark buttons). Download buttons point to `Claude-Taskbar-1.3.0.dmg` in the same folder.
 - `logo/`, `AppIcon.icns`: icon is a dark rounded square with a floating card, three status rows (blue working, orange needs you, green finished) and a white diamond pinned top-right. The menu bar glyph is that diamond as a template image.
 
 ## How questions work (important design decisions)
@@ -81,5 +81,5 @@ Claude Code runs the PermissionRequest hook *before* showing its own prompt and 
 
 - Verify two-way sync end to end with real Claude Code (above).
 - Repo: https://github.com/Niranjanck/claude-taskbar (public); local `main` tracks `origin/main`. The pre-GitHub local history is kept on branch `old-local`.
-- MDM: IT has the .pkg (320 KB for 1.0.0; `build-app.sh` now makes `Claude-Taskbar-1.2.0.pkg`, about 400 KB); waiting to hear whether it must be signed with a Developer ID Installer certificate.
+- MDM: IT has the .pkg (320 KB for 1.0.0; `build-app.sh` now makes `Claude-Taskbar-1.3.0.pkg`, about 400 KB); waiting to hear whether it must be signed with a Developer ID Installer certificate.
 - Website: update the download file name and version text when releasing a new version.
