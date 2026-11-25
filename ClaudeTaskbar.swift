@@ -8,6 +8,7 @@
 import Cocoa
 import ServiceManagement
 import Carbon.HIToolbox
+import CryptoKit
 
 let baseDir = NSHomeDirectory() + "/.claude-taskbar"
 let codeDir = baseDir + "/sessions"
@@ -1169,6 +1170,8 @@ final class AnswerServer {
     private struct Client { var key = ""; var prefix = false; var buffer = Data(); let source: DispatchSourceRead }
     private var listenSource: DispatchSourceRead?
     private var clients: [Int32: Client] = [:]
+    /// Answers nobody was waiting for yet (a hook or channel reconnecting): kept briefly.
+    private var queued: [(id: String, answer: [String: Any], expires: Date)] = []
 
     func start() {
         unlink(socketPath)
@@ -1225,15 +1228,36 @@ final class AnswerServer {
             if let pre = obj["subscribe"] as? String, !pre.isEmpty { client.key = pre; client.prefix = true }
         }
         clients[fd] = client
+        flushQueued()
+    }
+
+    private func flushQueued() {
+        guard !queued.isEmpty else { return }
+        queued = queued.filter { !send($0.id, $0.answer) }
+    }
+
+    /// Queued answers that were never picked up; the caller tells the user.
+    func expired() -> [String] {
+        let now = Date()
+        let gone = queued.filter { $0.expires < now }.map { $0.id }
+        if !gone.isEmpty { queued.removeAll { $0.expires < now } }
+        return gone
     }
 
     private func drop(_ fd: Int32) {
         clients.removeValue(forKey: fd)?.source.cancel()
     }
 
-    /// Sends the answer to every client waiting for this id. False if nobody was.
+    /// Sends the answer to whoever is waiting for this id. If nobody is yet and
+    /// `holdFor` > 0, keeps it that long for a client that reconnects. False if not sent now.
     @discardableResult
-    func deliver(_ id: String, _ answer: [String: Any]) -> Bool {
+    func deliver(_ id: String, _ answer: [String: Any], holdFor: TimeInterval = 0) -> Bool {
+        if send(id, answer) { return true }
+        if holdFor > 0 { queued.append((id, answer, Date().addingTimeInterval(holdFor))) }
+        return false
+    }
+
+    private func send(_ id: String, _ answer: [String: Any]) -> Bool {
         guard var data = try? JSONSerialization.data(withJSONObject: ["id": id, "answer": answer]) else { return false }
         data.append(10)
         var sent = false
@@ -1256,110 +1280,33 @@ final class AnswerServer {
 
 let usageFile = baseDir + "/usage.json"
 
-/// A thin rounded bar; blue, then orange past 70%, red past 90%.
-final class UsageBar: NSView {
-    var fraction: CGFloat = 0 { didSet { needsDisplay = true } }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 6) }
-    override func draw(_ dirtyRect: NSRect) {
-        let track = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
-        NSColor.labelColor.withAlphaComponent(0.12).setFill()
-        track.fill()
-        let f = max(0, min(1, fraction))
-        guard f > 0 else { return }
-        let color: NSColor = f >= 0.9 ? .systemRed : f >= 0.7 ? .systemOrange : .controlAccentColor
-        color.setFill()
-        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: max(6, bounds.width * f), height: bounds.height),
-                     xRadius: 3, yRadius: 3).fill()
-    }
-}
-
-/// The bottom of the panel: how much of the plan's current session (5-hour) limit is used,
-/// and the weekly limit. Claude Code shares these only with its status line command, which
-/// statusline.py saves to usage.json.
-final class UsageFooter: NSView {
-    private let title = makeLabel("Current session", size: 11, weight: .medium, color: .secondaryLabelColor)
-    private let value = makeLabel("", size: 11, color: .secondaryLabelColor)
-    private let bar = UsageBar()
-    private let week = makeLabel("", size: 10.5, color: .tertiaryLabelColor)
-    private var signature = ""
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        translatesAutoresizingMaskIntoConstraints = false
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        value.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let rule = NSBox()
-        rule.boxType = .separator
-        rule.translatesAutoresizingMaskIntoConstraints = false
-        for v in [rule, title, value, bar, week] { addSubview(v) }
-        NSLayoutConstraint.activate([
-            rule.topAnchor.constraint(equalTo: topAnchor),
-            rule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            rule.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            title.topAnchor.constraint(equalTo: rule.bottomAnchor, constant: 7),
-            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            value.firstBaselineAnchor.constraint(equalTo: title.firstBaselineAnchor),
-            value.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            value.leadingAnchor.constraint(greaterThanOrEqualTo: title.trailingAnchor, constant: 8),
-            bar.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 5),
-            bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            bar.heightAnchor.constraint(equalToConstant: 6),
-            week.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 5),
-            week.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            week.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
-            week.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-        ])
-        isHidden = true
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    private static func resetText(_ epoch: Double) -> String {
-        let date = Date(timeIntervalSince1970: epoch)
-        let f = DateFormatter()
-        f.dateFormat = Calendar.current.isDateInToday(date) ? "h:mm a"
-                     : (date.timeIntervalSinceNow < 6 * 86400 ? "EEE h:mm a" : "MMM d")
-        return f.string(from: date)
-    }
-
+/// Plan usage from Claude Code's status line (statusline.py saves it to usage.json):
+/// the current session (5-hour) and weekly limits, as shown by /usage.
+enum PlanUsage {
     /// (percent used, reset time) for a window, or nil. A window past its reset counts as 0%.
-    private static func window(_ limits: [String: Any], _ key: String) -> (Double, Double)? {
+    static func window(_ limits: [String: Any], _ key: String) -> (used: Double, resets: Double)? {
         guard let w = limits[key] as? [String: Any],
               let used = (w["used_percentage"] as? NSNumber)?.doubleValue else { return nil }
         let resets = (w["resets_at"] as? NSNumber)?.doubleValue ?? 0
         return (resets > 0 && resets < Date().timeIntervalSince1970) ? (0, 0) : (used, resets)
     }
 
-    /// Reads usage.json; returns true when the footer's size or visibility changed.
-    func update() -> Bool {
+    static func read() -> (session: (used: Double, resets: Double)?, weekly: (used: Double, resets: Double)?) {
         let limits = (readJSON(usageFile)?["rate_limits"] as? [String: Any]) ?? [:]
-        let session = UsageFooter.window(limits, "five_hour")
-        let weekly = UsageFooter.window(limits, "seven_day")
-        let sig = "\(String(describing: session))|\(String(describing: weekly))|\(Int(Date().timeIntervalSince1970 / 60))"
-        guard sig != signature else { return false }
-        signature = sig
-        let wasHidden = isHidden
-        // The bar shows the current session; without one (not reported yet), the week.
-        guard let (used, resets) = session ?? weekly else {
-            isHidden = true
-            return !wasHidden
-        }
-        isHidden = false
-        title.stringValue = session != nil ? "Current session" : "This week"
-        bar.fraction = CGFloat(used / 100)
-        value.stringValue = resets > 0 ? "\(Int(used.rounded()))% · resets \(UsageFooter.resetText(resets))"
-                                       : "\(Int(used.rounded()))%"
-        value.textColor = used >= 90 ? .systemRed : used >= 70 ? .systemOrange : .secondaryLabelColor
-        toolTip = "Plan usage reported by Claude Code (same as /usage). Updates whenever a Claude Code session redraws its status line."
-        if session != nil, let (wUsed, wResets) = weekly {
-            week.stringValue = "This week: \(Int(wUsed.rounded()))% used" + (wResets > 0 ? " · resets \(UsageFooter.resetText(wResets))" : "")
-            week.isHidden = false
-        } else {
-            week.stringValue = ""
-            week.isHidden = true
-        }
-        return wasHidden
+        return (window(limits, "five_hour"), window(limits, "seven_day"))
+    }
+
+    /// Green below 60%, yellow from 60%, red from 90%.
+    static func color(_ used: Double) -> NSColor {
+        used >= 90 ? .systemRed : used >= 60 ? .systemYellow : .systemGreen
+    }
+
+    static func resetText(_ epoch: Double) -> String {
+        let date = Date(timeIntervalSince1970: epoch)
+        let f = DateFormatter()
+        f.dateFormat = Calendar.current.isDateInToday(date) ? "h:mm a"
+                     : (date.timeIntervalSinceNow < 6 * 86400 ? "EEE h:mm a" : "MMM d")
+        return f.string(from: date)
     }
 }
 
@@ -1515,7 +1462,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let header = HeaderView(frame: .zero)
     private let cardsStack = NSStackView()
     private let rowsStack = NSStackView()
-    private let usageFooter = UsageFooter(frame: .zero)
     private var statusItem: NSStatusItem!
     private var collapsed = UserDefaults.standard.bool(forKey: "collapsed")
     private var timer: Timer?
@@ -1525,6 +1471,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var handled: Set<String> = []     // answered or dismissed, hidden right away
     private var seen: Set<String> = []        // for the arrival sound
     private var rowsSignature = ""
+    private var headerSignature = "-"
     private var sessions: [String: TaskItem] = [:]
     /// Removed tasks: id -> what they looked like when removed. A Claude Code task comes
     /// back when you send it a new prompt; a claude.ai chat when you send a new message.
@@ -1615,7 +1562,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             stack.topAnchor.constraint(equalTo: fx.topAnchor, constant: 2),
             stack.widthAnchor.constraint(equalToConstant: panelWidth),
         ])
-        for v in [header, cardsStack, rowsStack, usageFooter] as [NSView] { add(v, to: stack) }
+        for v in [header, cardsStack, rowsStack] as [NSView] { add(v, to: stack) }
 
         header.onClick = { [weak self] in self?.toggleCollapsed() }
         header.onMinimize = { [weak self] in self?.hidePanel() }
@@ -1716,6 +1663,14 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Tell the hooks the panel is up, so they wait for answers here.
         FileManager.default.createFile(atPath: aliveFile, contents: nil)
         followMouseIfNeeded()
+        let lost = answers.expired()
+        if !lost.isEmpty {
+            lost.forEach { handled.remove($0) }   // show the card again
+            DispatchQueue.main.async {
+                Setup.alert("Your answer didn't reach Claude Code",
+                            "Claude Code stopped waiting for this question before the answer arrived. If the card is still shown, answer it again; otherwise answer in Claude Code.")
+            }
+        }
 
         var items = loadItems(dir: codeDir, source: "code", maxAge: 12 * 3600)
         items += loadItems(dir: webDir, source: "web", maxAge: 150)   // tabs heartbeat every 20–60s
@@ -1753,18 +1708,37 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let barTitle = active == 0 ? "" : " \(active)"
         if statusItem.button?.title != barTitle { statusItem.button?.title = barTitle }
 
-        var counts: [String] = []
-        if needYou > 0 { counts.append("\(needYou) need\(needYou == 1 ? "s" : "") you") }
-        if running > 0 { counts.append("\(running) working") }
-        let summary = counts.isEmpty ? "Claude" : "Claude, " + counts.joined(separator: ", ")
-        if header.label.stringValue != summary { header.label.stringValue = summary }
+        // Header: "Claude  CS 28% · WL 8%", each number colored by how much is used.
+        let usage = PlanUsage.read()
+        let sig = "\(usage.session.map { Int($0.used.rounded()) } ?? -1)|\(usage.weekly.map { Int($0.used.rounded()) } ?? -1)"
+        if sig != headerSignature {
+            headerSignature = sig
+            let font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+            let title = NSMutableAttributedString(string: "Claude", attributes: [
+                .font: font, .foregroundColor: NSColor.secondaryLabelColor])
+            var tip: [String] = []
+            func add(_ name: String, _ w: (used: Double, resets: Double)?, _ long: String) {
+                guard let w = w else { return }
+                if title.length > 6 {
+                    title.append(NSAttributedString(string: " · ", attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))
+                } else {
+                    title.append(NSAttributedString(string: "  ", attributes: [.font: font]))
+                }
+                title.append(NSAttributedString(string: "\(name) \(Int(w.used.rounded()))%", attributes: [
+                    .font: font, .foregroundColor: PlanUsage.color(w.used)]))
+                tip.append("\(long): \(Int(w.used.rounded()))% used" + (w.resets > 0 ? ", resets \(PlanUsage.resetText(w.resets))" : ""))
+            }
+            add("CS", usage.session, "Current session")
+            add("WL", usage.weekly, "Weekly limit")
+            header.label.attributedStringValue = title
+            header.toolTip = tip.isEmpty ? nil : tip.joined(separator: "\n") + "\nSame as Claude Code's /usage."
+        }
         let chevron = collapsed ? "Show list" : "Hide list"
         if header.chevron.stringValue != chevron { header.chevron.stringValue = chevron }
 
         let cardsChanged = updateCards(questions)
         let rowsChanged = updateRows(items)
-        let usageChanged = usageFooter.update()
-        if cardsChanged || rowsChanged || usageChanged { resizePanel() }
+        if cardsChanged || rowsChanged { resizePanel() }
     }
 
     /// Adds new question cards and removes answered ones, keeping the rest as they are
@@ -1932,7 +1906,10 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default:
                 var ans = payload
                 ans["action"] = action
-                answers.deliver(q.id, ans)   // to the waiting hook or channel, never via a file
+                ans["shown"] = shownHash(q)   // the answer counts only for exactly this content
+                // To the waiting hook or channel, never via a file. If it's reconnecting,
+                // the answer is held briefly; refresh() reports it if it's never picked up.
+                answers.deliver(q.id, ans, holdFor: 15)
                 handled.insert(q.id)
                 if action == "terminal", let session = session(for: q) { open(session) }
             }
@@ -1940,6 +1917,17 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.makeFirstResponder(nil)
         if action != "terminal" { returnFocus() }
         refresh()
+    }
+
+    /// What the card showed; the hook and channel accept an answer only if this matches
+    /// what they asked (panel_link.shown_hash), so editing a card's file voids the answer.
+    private func shownHash(_ q: Question) -> String {
+        var parts = [q.title, q.summary, q.body]
+        for item in q.questions {
+            parts.append((item["question"] as? String) ?? "")
+            for opt in (item["options"] as? [[String: Any]]) ?? [] { parts.append((opt["label"] as? String) ?? "") }
+        }
+        return SHA256.hash(data: Data(parts.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Cards from the channel know the Claude Code process, not the session id.

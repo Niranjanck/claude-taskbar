@@ -133,7 +133,7 @@ def replace_info_card(tool):
     try:
         names = os.listdir(QUESTIONS_DIR)
     except OSError:
-        return
+        return {}
     oldest = None
     for name in names:
         q = read_json(os.path.join(QUESTIONS_DIR, name))
@@ -141,8 +141,15 @@ def replace_info_card(tool):
                 and q.get("claude_pid") == CLAUDE_PID):
             if oldest is None or float(q.get("created") or 0) < oldest[0]:
                 oldest = (float(q.get("created") or 0), name)
-    if oldest:
-        remove(os.path.join(QUESTIONS_DIR, oldest[1]))
+    if not oldest:
+        return {}
+    card = read_json(os.path.join(QUESTIONS_DIR, oldest[1])) or {}
+    remove(os.path.join(QUESTIONS_DIR, oldest[1]))
+    return card
+
+
+PENDING = {}   # question id -> the card as this server wrote it (files are display only)
+PENDING_LOCK = threading.Lock()
 
 
 def on_permission_request(params):
@@ -166,13 +173,19 @@ def on_permission_request(params):
         pass
     body = body[:20_000]
     qid = f"{PREFIX}p-{request_id}"
-    write_atomic(QUESTIONS_DIR, qid + ".json", {
+    card = {
         "id": qid, "kind": "permission", "live": True, "request_id": request_id,
         "tool": tool, "project": PROJECT, "title": permission_title(tool), "body": body,
         "description": desc,
         "created": time.time(), "claude_pid": CLAUDE_PID, "session_id": "",
-    })
-    replace_info_card(tool)
+    }
+    replaced = replace_info_card(tool)
+    for key in ("tool_use_id", "input_hash"):   # lets the hooks clear it when answered
+        if replaced.get(key):
+            card[key] = replaced[key]
+    with PENDING_LOCK:
+        PENDING[qid] = card
+    write_atomic(QUESTIONS_DIR, qid + ".json", card)
 
 
 def deliver(qid, question, answer):
@@ -187,11 +200,18 @@ def deliver(qid, question, answer):
 
 
 def on_panel_answer(qid, answer):
-    qpath = os.path.join(QUESTIONS_DIR, qid + ".json")
-    question = read_json(qpath)
-    remove(qpath)
-    if isinstance(question, dict):
-        deliver(qid, question, answer)
+    """Permission verdicts use the request this server holds in memory, and only if the
+    panel showed exactly that card; the file could have been edited. Replies (cards the
+    hook wrote) carry the user's own text, so they need no such binding."""
+    import panel_link
+    with PENDING_LOCK:
+        pending = PENDING.pop(qid, None)
+    remove(os.path.join(QUESTIONS_DIR, qid + ".json"))
+    if pending is not None:
+        if panel_link.answer_matches(pending, answer):
+            deliver(qid, pending, answer)
+    elif answer.get("action") == "reply":
+        deliver(qid, {"kind": "reply"}, answer)
 
 
 def watch_answers():

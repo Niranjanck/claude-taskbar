@@ -60,7 +60,7 @@ Channels are a Claude Code research preview: Claude Code shows a warning about d
 
 ### Answer in the panel, terminal waits
 
-Without channels (or when your organization has turned them off; Claude Code then says "blocked by org policy" when `claude-tb` starts), the panel can't share a prompt with the terminal. This mode is separate from channels: it uses Claude Code's standard hooks and doesn't load or enable a channel. If your organization turned channels off, check with your admin before using it, since it lets the panel approve prompts. Choose **Answer Questions in Panel (Terminal Waits)** in the menu bar icon (`"blocking": true` in `config.json`): permission prompts get **Yes / No**, multiple-choice questions get their options, and questions at the end of a reply get a reply box. Claude Code waits for your answer; **Answer in terminal** hands the question back, and so does a timeout (10 minutes for permission prompts and multiple choice, 2 minutes for questions at the end of a reply, since a reply typed in the terminal waits for that) or quitting the panel. Press Esc in the terminal to stop waiting right away.
+Without channels (or when your organization has turned them off; Claude Code then says "blocked by org policy" when `claude-tb` starts), the panel can't share a prompt with the terminal. This mode is separate from channels: it uses Claude Code's standard hooks and doesn't load or enable a channel. It is off by default. Because it lets the panel approve permission prompts, an organization that turned channels off should decide whether to allow it before rolling Claude Taskbar out; managed settings can restrict hooks. Choose **Answer Questions in Panel (Terminal Waits)** in the menu bar icon (`"blocking": true` in `config.json`): permission prompts get **Yes / No**, multiple-choice questions get their options, and questions at the end of a reply get a reply box. Claude Code waits for your answer; **Answer in terminal** hands the question back, and so does a timeout (10 minutes for permission prompts and multiple choice, 2 minutes for questions at the end of a reply, since a reply typed in the terminal waits for that) or quitting the panel. Press Esc in the terminal to stop waiting right away.
 
 ### Sessions started with plain `claude`
 
@@ -122,11 +122,11 @@ In the menu bar icon, choose **Disconnect from Claude Code**, then **Quit**, and
 
 ```
 Claude Code ── hooks ──> claude_hook.py ──> sessions/*.json, questions/*.json ──┐
-            <── answer ── claude_hook.py <══ panel.sock (verified peer) ═══════┤
+            <── answer ── claude_hook.py <══ panel.sock (checked peer) ═══════┤
             ── channel ─> channel_server.py ─> questions/*.json               ├── ClaudeTaskbar.app (panel)
             <── verdict ─ channel_server.py <══ panel.sock ════════════════════┤
 claude.ai tab ── extension ── native messaging ─> native_host.py ─> web/*.json ┤
               <── reply ───────────────────────── native_host.py <══ panel.sock┘
 ```
 
-Questions, sessions and tab state live in `~/.claude-taskbar/` (only your account can read it). Answers are never written to files: the panel sends them over a Unix socket, and the hook, channel and Chrome host check that the other end really is the Claude Taskbar app, so a file or program pretending to be the panel can't approve a prompt or send a reply. The Chrome extension uses Chrome native messaging, so there's no network port. The panel touches `panel.alive` twice a second; hooks and the channel only show cards while that file is fresh.
+Questions, sessions and tab state live in `~/.claude-taskbar/` (only your account can read it). Answers are never written to files: the panel sends them over a Unix socket, and the hook, channel and Chrome host only accept them from the app installed in `/Applications` (or `~/Applications`). Each answer also carries a hash of what the card showed, so an answer to a card whose text was changed is discarded. This stops a dropped file or a stand-in program from approving a prompt or sending a reply. It isn't a code-signature check: the app is ad-hoc signed, so a program running as you that overwrites the installed app, or simply edits the hook scripts or Claude Code's settings, could still get around it. The Chrome extension uses Chrome native messaging, so there's no network port.

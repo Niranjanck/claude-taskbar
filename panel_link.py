@@ -1,10 +1,15 @@
 """Receiving answers from the Claude Taskbar panel, and only from the panel.
 
-The panel never writes answers to files (anything running as you could forge
-those). It sends them over a Unix socket, ~/.claude-taskbar/panel.sock, and every
-client checks that the process on the other end is the Claude Taskbar app: the
-kernel reports the peer's pid (LOCAL_PEERPID), and that pid's executable must be
-Claude Taskbar.app's binary. A stand-in socket from any other program is refused.
+The panel never writes answers to files. It sends them over a Unix socket,
+~/.claude-taskbar/panel.sock, and every client checks the process on the other end:
+the kernel reports the peer's pid (LOCAL_PEERPID), and that pid's executable must be
+the installed app, /Applications/Claude Taskbar.app (or ~/Applications).
+
+What this does and doesn't stop: it rejects a forged answer file and a stand-in
+program running from anywhere else. It is NOT a code-signature check: the build is
+ad-hoc signed, so a same-user program that overwrites the installed app could still
+pass. Answers also carry a hash of what the card showed ("shown"), so editing a
+pending card's text makes the answer invalid (see shown_hash).
 
 Protocol: newline-delimited JSON.
   client -> panel  {"wait": "<question id>"}      one answer, then the panel closes
@@ -12,6 +17,7 @@ Protocol: newline-delimited JSON.
   panel -> client  {"id": "<question id>", "answer": {...}}
 """
 import ctypes
+import hashlib
 import json
 import os
 import socket
@@ -19,7 +25,10 @@ import struct
 import time
 
 SOCKET_PATH = os.path.expanduser("~/.claude-taskbar/panel.sock")
-APP_BINARY_SUFFIX = "/Claude Taskbar.app/Contents/MacOS/ClaudeTaskbar"
+APP_BINARIES = {
+    "/Applications/Claude Taskbar.app/Contents/MacOS/ClaudeTaskbar",
+    os.path.expanduser("~/Applications/Claude Taskbar.app/Contents/MacOS/ClaudeTaskbar"),
+}
 SOL_LOCAL = 0
 LOCAL_PEERPID = 0x002
 
@@ -44,7 +53,26 @@ def is_panel(sock):
         pid = struct.unpack("i", sock.getsockopt(SOL_LOCAL, LOCAL_PEERPID, 4))[0]
     except OSError:
         return False
-    return process_path(pid).endswith(APP_BINARY_SUFFIX)
+    return process_path(pid) in APP_BINARIES
+
+
+def shown_hash(question):
+    """What the panel showed for a card: title, summary line, body, and any multiple-choice
+    questions with their option labels. Must match ClaudeTaskbar.swift's shownHash."""
+    parts = [str(question.get("title") or ""), str(question.get("description") or ""),
+             str(question.get("body") or "")]
+    for q in question.get("questions") or []:
+        if isinstance(q, dict):
+            parts.append(str(q.get("question") or ""))
+            for opt in q.get("options") or []:
+                if isinstance(opt, dict):
+                    parts.append(str(opt.get("label") or ""))
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def answer_matches(question, answer):
+    """True if the answer was given to exactly this card's content."""
+    return isinstance(answer, dict) and answer.get("shown") == shown_hash(question)
 
 
 def connect(request, timeout=2.0):

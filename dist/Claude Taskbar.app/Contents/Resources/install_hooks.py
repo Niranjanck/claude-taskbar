@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
@@ -89,9 +90,23 @@ def main():
         backup = f"{SETTINGS}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
         shutil.copy2(SETTINGS, backup)
         print(f"Backed up settings to {backup}")
-    with open(SETTINGS, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
+    # Temp file + rename: a crash or a concurrent write can't leave settings.json empty.
+    mode = os.stat(SETTINGS).st_mode & 0o777 if os.path.exists(SETTINGS) else 0o644
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(SETTINGS), prefix=".settings.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, SETTINGS)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     print("Removed Claude Taskbar hooks." if remove else f"Installed hooks in {SETTINGS}")
 
 

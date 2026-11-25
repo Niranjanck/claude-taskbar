@@ -16,6 +16,7 @@ Claude Code never waits on the panel (unless config.json has "blocking": true):
 Nothing is printed except the decision JSON Claude Code reads.
 """
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -344,9 +345,16 @@ def _update_status(data, sid, fields):
 # Claude Code doesn't tell the panel (or a channel) when you answer in the terminal,
 # so the hooks that follow an answer remove the matching cards.
 
-def clear_questions(data, tool=None, before=None):
-    """tool: remove the oldest permission card for that tool (it was just allowed).
-    Otherwise remove every pending card of this session created before `before`."""
+PERMISSION_KINDS = ("permission", "permission-info")
+
+
+def clear_questions(data, tool=None, before=None, kinds=None):
+    """tool: remove the permission card for the call that just ran (matched by
+    tool_use_id, else by its exact input; never just "the oldest for that tool", since
+    another call of the same tool, e.g. from a subagent, may finish meanwhile).
+    Otherwise remove this session's pending cards created before `before`, limited to
+    `kinds` if given."""
+    ident = call_identity(data) if tool is not None else {}
     try:
         names = [n for n in os.listdir(QUESTIONS_DIR) if n.endswith(".json")]
     except OSError:
@@ -370,11 +378,15 @@ def clear_questions(data, tool=None, before=None):
             continue
         created = float(q.get("created") or 0)
         if tool is not None:
-            if q.get("tool") == tool and q.get("kind") in ("permission", "permission-info"):
-                matches.append((created, path))
+            if q.get("tool") == tool and q.get("kind") in PERMISSION_KINDS:
+                same_call = (q.get("tool_use_id") == ident.get("tool_use_id")
+                             if q.get("tool_use_id") and ident.get("tool_use_id")
+                             else q.get("input_hash") == ident["input_hash"])
+                if same_call:
+                    matches.append((created, path))
             elif tool == "AskUserQuestion" and q.get("kind") == "choice-info":
                 matches.append((created, path))
-        elif before is None or created < before:
+        elif (before is None or created < before) and (kinds is None or q.get("kind") in kinds):
             matches.append((created, path))
     if tool is not None and tool != "AskUserQuestion":
         matches = sorted(matches)[:1]
@@ -397,7 +409,9 @@ def record(data):
     elif event == "PostToolUse":
         clear_questions(data, tool=str(data.get("tool_name") or ""))
     elif event == "Notification" and "waiting for your input" in str(data.get("message") or "").lower():
-        clear_questions(data)   # e.g. a permission you denied in the terminal
+        # Usually a permission you denied in the terminal. The same wording is Claude
+        # Code's idle reminder after a finished turn, so leave reply/choice cards alone.
+        clear_questions(data, kinds=PERMISSION_KINDS)
 
     if event == "SessionEnd":
         for p in (path, os.path.join(SESSIONS_DIR, sid + ".lock")):
@@ -446,7 +460,12 @@ def ask_panel(question, timeout):
     deadline = time.time() + timeout
     try:
         import panel_link
-        return panel_link.wait_for(qid, lambda: time.time() < deadline and panel_alive())
+        answer = panel_link.wait_for(qid, lambda: time.time() < deadline and panel_alive())
+        # The card's file could have been edited while it waited; an answer counts only
+        # if the panel showed exactly what this hook asked.
+        if answer is not None and answer.get("action") != "terminal" and not panel_link.answer_matches(question, answer):
+            return None
+        return answer
     except Exception:
         return None
     finally:
@@ -463,6 +482,15 @@ def new_question(data, kind, title, body, **extra):
          "created": time.time(), "hook_pid": os.getpid()}
     q.update(extra)
     return q
+
+
+def call_identity(data):
+    """Ties a permission card to one tool call, so only that call's PostToolUse clears it."""
+    inp = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+    ident = {"input_hash": hashlib.sha256(json.dumps(inp, sort_keys=True).encode()).hexdigest()}
+    if data.get("tool_use_id"):
+        ident["tool_use_id"] = str(data["tool_use_id"])
+    return ident
 
 
 def show_card(data, kind, title, body, **extra):
@@ -574,11 +602,12 @@ def handle_ask(data):
         update_status(data, state="waiting", detail="Needs your permission")
         title, body = permission_title(project, tool), permission_body(tool, inp)
         desc = permission_description(tool, inp)
+        ident = call_identity(data)
         if not blocking:
             # If this session has a working channel, it swaps this for a live Yes/No card.
-            show_card(data, "permission-info", title, body, tool=tool, description=desc)
+            show_card(data, "permission-info", title, body, tool=tool, description=desc, **ident)
             return
-        q = new_question(data, "permission", title, body, tool=tool, description=desc)
+        q = new_question(data, "permission", title, body, tool=tool, description=desc, **ident)
         answer = ask_panel(q, timeout)
         action = (answer or {}).get("action")
         if action == "allow":

@@ -6,14 +6,14 @@ An always-on-top macOS panel that lists every Claude Code session and claude.ai 
 
 ```
 Claude Code ── hooks ──> claude_hook.py ──> sessions/*.json, questions/*.json ──┐
-            <── answer ── claude_hook.py <══ panel.sock (verified peer) ═══════┤
+            <── answer ── claude_hook.py <══ panel.sock (checked peer) ═══════┤
             ── channel ─> channel_server.py ─> questions/*.json               ├── ClaudeTaskbar.app (panel)
             <── verdict ─ channel_server.py <══ panel.sock ════════════════════┤
 claude.ai tab ── extension ── native messaging ─> native_host.py ─> web/*.json ┤
               <── reply ───────────────────────── native_host.py <══ panel.sock┘
 ```
 
-State goes through files in `~/.claude-taskbar/` (owner-only, 0700). **Answers never do**: the panel sends them only over the Unix socket `panel.sock` (0600), and every client (`panel_link.py`) checks the peer with `LOCAL_PEERPID` + `proc_pidpath` that it is `…/Claude Taskbar.app/Contents/MacOS/ClaudeTaskbar` before trusting it. A forged file or a stand-in socket can't approve a permission prompt or inject a reply. (A process running as the user can still do harm other ways, e.g. by editing the hook scripts or Claude Code settings; this closes the one-line-file-write path.)
+State goes through files in `~/.claude-taskbar/` (owner-only, 0700). **Answers never do**: the panel sends them only over the Unix socket `panel.sock` (0600). Clients (`panel_link.py`) accept a peer only if `LOCAL_PEERPID` + `proc_pidpath` gives exactly `/Applications/Claude Taskbar.app/Contents/MacOS/ClaudeTaskbar` (or the `~/Applications` one), and an answer only if its `shown` hash matches the card they asked (title, description, body, choice labels; `shownHash` in Swift must stay identical, `tests/test_hash_parity.py` checks). The channel server keeps pending requests in memory and ignores card files for verdicts. Not a code-signature check (ad-hoc build): a same-user program that overwrites the installed app, or edits the hooks/settings, can still get around it. Use a Developer ID designated-requirement check once a certificate exists.
 
 | Path | Written by | Read by |
 |---|---|---|
@@ -72,6 +72,7 @@ Claude Code runs the PermissionRequest hook *before* showing its own prompt and 
 
 ## Testing
 
+- `bash tests/run.sh` runs everything (temporary HOME; the peer check against the running panel needs it installed in /Applications).
 - Python: `python3 -m py_compile claude_hook.py channel_server.py install_hooks.py panel_link.py native_host.py`. Hooks can be exercised by piping hook JSON into `claude_hook.py` with `HOME` pointed at a temp folder. The channel server can be driven by writing JSON-RPC lines to its stdin.
 - Swift: `bash build-app.sh`, then `pkill -x ClaudeTaskbar; open "dist/Claude Taskbar.app"`. Not unit tested.
 - Two-way sync, manual: start `claude-tb` in a project, ask Claude to create a file; the panel and the terminal both show the prompt. Answer in one, check the other clears. Repeat answering on the other side.
