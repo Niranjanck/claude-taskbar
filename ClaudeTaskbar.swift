@@ -1854,12 +1854,18 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func resizePanel() {
         stack.layoutSubtreeIfNeeded()
         var h = ceil(stack.fittingSize.height) + 6
-        let top = panel.frame.maxY
-        // Long questions scroll inside their cards; never grow past the screen.
-        if let screen = panel.screen ?? NSScreen.main {
-            h = min(h, top - screen.visibleFrame.minY - 8)
+        var top = panel.frame.maxY
+        var x = panel.frame.minX
+        // The panel grows down from its top edge. If that would run past the bottom of the
+        // screen (e.g. it was placed low, or on a taller display), move it up rather than
+        // squeezing it; only a panel taller than the whole screen gets shortened.
+        if let vf = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            h = min(h, vf.height - 16)
+            if top - h < vf.minY + 8 { top = vf.minY + 8 + h }
+            top = min(top, vf.maxY)
+            x = min(max(x, vf.minX), vf.maxX - panelWidth)
         }
-        panel.setFrame(NSRect(x: panel.frame.minX, y: top - h, width: panelWidth, height: h), display: true)
+        panel.setFrame(NSRect(x: x, y: top - h, width: panelWidth, height: h), display: true)
     }
 
     private func note(_ text: String) -> NSView {
