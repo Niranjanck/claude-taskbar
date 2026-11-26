@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${VERSION:-1.3.1}"
+VERSION="${VERSION:-1.3.2}"
 OUT="$SRC/dist"
 APP="$OUT/Claude Taskbar.app"
 DMG="$OUT/Claude-Taskbar-$VERSION.dmg"
@@ -102,6 +102,7 @@ SIGN_PKG=()
 [ -n "${INSTALLER_ID:-}" ] && SIGN_PKG=(--sign "$INSTALLER_ID" --timestamp)
 pkgbuild --quiet --root "$PKGROOT" --component-plist "$COMPONENTS" \
   --identifier com.claudetaskbar.app --version "$VERSION" \
+  --scripts "$SRC/pkg-scripts" \
   --install-location /Applications ${SIGN_PKG[@]+"${SIGN_PKG[@]}"} "$PKG"
 rm -rf "$PKGROOT" "$COMPONENTS"
 if [ -n "${INSTALLER_ID:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then

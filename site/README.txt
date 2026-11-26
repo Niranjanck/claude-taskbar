@@ -1,7 +1,7 @@
 Claude Taskbar website, ready for Cloudflare Pages
 
 1. Copy the app's disk image into this folder:
-     cp ~/Documents/Tracker/dist/Claude-Taskbar-1.3.1.dmg .
+     cp ~/Documents/Tracker/dist/Claude-Taskbar-1.3.2.dmg .
    (The download buttons point to that exact file name. If you release a new
    version, update the name in index.html too.)
 

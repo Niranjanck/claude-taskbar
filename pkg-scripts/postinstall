@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs as root after the .pkg installs (e.g. an update pushed through Scalefusion/MDM).
+# A Claude Taskbar that was already running keeps running the OLD version until it's
+# reopened, and the app sets itself up (scripts, hooks, status line) only at launch.
+# So if it was running for the logged-in user, restart it as that user.
+APP="/Applications/Claude Taskbar.app"
+CONSOLE_USER=$(/usr/bin/stat -f%Su /dev/console)
+case "$CONSOLE_USER" in ""|root|loginwindow|_mbsetupuser) exit 0 ;; esac
+CONSOLE_UID=$(/usr/bin/id -u "$CONSOLE_USER") || exit 0
+if /usr/bin/pgrep -u "$CONSOLE_UID" -x ClaudeTaskbar >/dev/null 2>&1; then
+  /usr/bin/pkill -u "$CONSOLE_UID" -x ClaudeTaskbar
+  sleep 2
+  /bin/launchctl asuser "$CONSOLE_UID" /usr/bin/sudo -u "$CONSOLE_USER" /usr/bin/open "$APP"
+fi
+exit 0

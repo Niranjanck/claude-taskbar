@@ -17,10 +17,10 @@ bash build-app.sh
 
 This builds `dist/Claude Taskbar.app` for both Apple silicon and Intel Macs, and packs it two ways:
 
-- `dist/Claude-Taskbar-1.3.1.dmg`: the file you share. It contains the app, a shortcut to Applications, and a "Read Me First" for the person installing it (the same text as `INSTALL.txt`).
-- `dist/Claude-Taskbar-1.3.1.pkg`: an installer that puts the app in /Applications, for deploying through MDM. Set `INSTALLER_ID="Developer ID Installer: Your Company (TEAMID)"` to sign it.
+- `dist/Claude-Taskbar-1.3.2.dmg`: the file you share. It contains the app, a shortcut to Applications, and a "Read Me First" for the person installing it (the same text as `INSTALL.txt`).
+- `dist/Claude-Taskbar-1.3.2.pkg`: an installer that puts the app in /Applications, for deploying through MDM. Set `INSTALLER_ID="Developer ID Installer: Your Company (TEAMID)"` to sign it.
 
-To set the version number: `VERSION=1.3.1 bash build-app.sh`.
+To set the version number: `VERSION=1.3.2 bash build-app.sh`.
 
 ### Opening without a security warning
 

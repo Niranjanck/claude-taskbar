@@ -4,7 +4,7 @@
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
-for t in test_hook test_agents test_channel test_security test_hash_parity; do
+for t in test_hook test_agents test_channel test_security test_hash_parity test_statusline; do
   echo "== $t"
   out=$(python3 "$REPO/tests/$t.py" "$REPO" 2>&1)
   echo "$out" | grep -v "^PASS"

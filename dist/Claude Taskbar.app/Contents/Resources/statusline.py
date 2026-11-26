@@ -35,10 +35,20 @@ def main():
     limits = data.get("rate_limits") if isinstance(data.get("rate_limits"), dict) else {}
     cost = data.get("cost") if isinstance(data.get("cost"), dict) else {}
 
-    # Written even without limits, so the panel can tell "not on a plan that reports
-    # usage" from "no session has drawn a status line yet".
-    if True:
-        rec = {"rate_limits": limits, "updated": time.time(),
+    # Claude Code sends rate_limits only after a session's first response, and drops a
+    # window for a while once it resets. So a fresh session (or one in an IDE) often sends
+    # none. Only update the windows actually received; never wipe saved numbers with an
+    # empty update, or the panel's bar disappears whenever a new session starts.
+    if limits:
+        saved = {}
+        try:
+            with open(USAGE_FILE) as f:
+                saved = json.load(f).get("rate_limits") or {}
+        except Exception:
+            saved = {}
+        merged = dict(saved) if isinstance(saved, dict) else {}
+        merged.update({k: v for k, v in limits.items() if isinstance(v, dict)})
+        rec = {"rate_limits": merged, "updated": time.time(),
                "session_cost_usd": cost.get("total_cost_usd")}
         try:
             os.makedirs(BASE, mode=0o700, exist_ok=True)
